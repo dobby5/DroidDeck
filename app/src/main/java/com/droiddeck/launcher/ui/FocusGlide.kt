@@ -6,6 +6,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -58,6 +59,8 @@ internal class GlideSource {
     var width by mutableStateOf(2.dp)
     var fillAlpha by mutableFloatStateOf(RING_FILL)
     val requester = androidx.compose.ui.focus.FocusRequester()
+    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+    val reveal = androidx.compose.foundation.relocation.BringIntoViewRequester()
 }
 
 internal class FocusGlide(view: View?) {
@@ -72,6 +75,7 @@ internal class FocusGlide(view: View?) {
 
     var host: LayoutCoordinates? = null
     val hot = mutableStateListOf<GlideSource>()
+    val all = HashSet<GlideSource>()
     var moves by mutableIntStateOf(0)
     var hidden by mutableStateOf(false)
 
@@ -116,6 +120,52 @@ private fun cornerOf(shape: Shape, size: Size, dir: LayoutDirection, density: De
         is Outline.Generic -> minOf(size.width, size.height) / 2f
     }
 
+/** Room a newly focused control asks for around itself, so a move shows what comes next. */
+private val REVEAL = 48.dp
+
+/** The content of the nearest vertically scrolled container around [c], and the viewport that shows it. */
+private fun scrollFrameOf(c: LayoutCoordinates): Pair<LayoutCoordinates, LayoutCoordinates>? {
+    var child = c
+    var parent = c.parentCoordinates
+    while (parent != null) {
+        if (parent.size.height < child.size.height) return child to parent
+        child = parent
+        parent = parent.parentCoordinates
+    }
+    return null
+}
+
+private fun LayoutCoordinates.inside(ancestor: LayoutCoordinates): Boolean {
+    var p: LayoutCoordinates? = this
+    while (p != null) {
+        if (p === ancestor) return true
+        p = p.parentCoordinates
+    }
+    return false
+}
+
+/**
+ * What a newly focused control asks its scroll containers to show: [room] around it, but everything up to the start
+ * of the scrolled content when no other control sits above it, and down to the end when none sits below it, so
+ * titles and notes outside the controls come along.
+ */
+internal fun revealRect(me: LayoutCoordinates, peers: Collection<LayoutCoordinates>, room: Float): Rect {
+    val w = me.size.width.toFloat()
+    val h = me.size.height.toFloat()
+    val plain = Rect(-room, -room, w + room, h + room)
+    val (content, viewport) = scrollFrameOf(me) ?: return plain
+    val top = content.localPositionOf(me, Offset.Zero).y
+    val bottom = top + h
+    val near = peers.filter { it !== me && it.isAttached && it.inside(content) }
+    val first = near.none { content.localPositionOf(it, Offset.Zero).y < top - 1f }
+    val last = near.none { content.localPositionOf(it, Offset.Zero).y + it.size.height > bottom + 1f }
+    val up = if (first) maxOf(top, room) else room
+    val down = if (last) maxOf(content.size.height - bottom, room) else room
+    if (h + up + down > viewport.size.height) return plain
+    return Rect(-room, -up, w + room, h + down)
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun Modifier.glideBorder(
     hot: Boolean,
@@ -135,12 +185,27 @@ internal fun Modifier.glideBorder(
     src.color = hotColor
     src.width = hotWidth
     src.fillAlpha = hotFillAlpha
+    val inputMode = androidx.compose.ui.platform.LocalInputModeManager.current
+    val scope = rememberCoroutineScope()
+    val room = with(LocalDensity.current) { REVEAL.toPx() }
     DisposableEffect(glide, hot) {
-        if (hot) glide.claim(src)
+        if (hot) {
+            glide.claim(src)
+            if (inputMode.inputMode == androidx.compose.ui.input.InputMode.Keyboard) scope.launch {
+                val me = src.coords?.takeIf { it.isAttached } ?: return@launch
+                runCatching { src.reveal.bringIntoView(revealRect(me, glide.all.mapNotNull { it.coords }, room)) }
+            }
+        }
         onDispose { glide.release(src) }
     }
+    DisposableEffect(glide) {
+        glide.all.add(src)
+        onDispose { glide.all.remove(src) }
+    }
     val base = if (restColor.alpha > 0f) border(restWidth, restColor, shape) else this
-    return base.focusRequester(src.requester).onGloballyPositioned { src.coords = it; glide.moved(src) }
+    return base.focusRequester(src.requester)
+        .bringIntoViewRequester(src.reveal)
+        .onGloballyPositioned { src.coords = it; glide.moved(src) }
 }
 
 private class Edge(val damping: Float, val stiffness: Float)

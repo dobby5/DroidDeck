@@ -47,6 +47,12 @@ jobs:
             echo "::error::main ${GITHUB_SHA::7} has no successful Build APK run yet: wait for it, then release"
             exit 1
           fi
+          titles=$(sed -n 's/^# from titledb commit \([0-9a-f]\{40\}\).*/\1/p' app/src/main/assets/switch-titles.tsv)
+          latest=$(gh api repos/blawar/titledb/commits/master --jq .sha 2>/dev/null || true)
+          if [ -n "$latest" ] && [ "$latest" != "$titles" ]; then
+            echo "::warning::switch-titles.tsv is from titledb ${titles::7}, titledb is at ${latest::7}: run tools/switch-titles/update.sh before the next release"
+            echo "Switch covers: titledb has moved on (${titles::7} -> ${latest::7}); run tools/switch-titles/update.sh." >> "$GITHUB_STEP_SUMMARY"
+          fi
           variants=$(awk '!/^#/ && NF { print $1 }' tools/release/variants.txt | jq -R . | jq -sc .)
           echo "run_id=$id" >> "$GITHUB_OUTPUT"
           echo "variants=$variants" >> "$GITHUB_OUTPUT"

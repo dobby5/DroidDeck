@@ -118,13 +118,13 @@ internal object StoreTabsState {
         SessionPrefs.saveStoresTabs(context, tabs.map { it.store.id }, tabs.filterNot { it.shown }.map { it.store.id }.toSet(), arranged)
 }
 
-/** The Library tabs that are not stores but sort among them in Manage stores. Only Favorites, Custom games and Hidden can be turned off; Hidden starts off. */
-internal val LIBRARY_OWN_TABS = listOf(LIBRARY_FAVORITES, Library.SOURCE_STEAM, Library.ADDED, LIBRARY_HIDDEN)
-internal val LIBRARY_HIDEABLE_TABS = setOf(LIBRARY_FAVORITES, Library.ADDED, LIBRARY_HIDDEN)
+/** The Library tabs that are not stores but sort among them in Manage stores. Only Steam can't be turned off; Hidden starts off. */
+internal val LIBRARY_OWN_TABS = listOf(LIBRARY_FAVORITES, Library.SOURCE_STEAM, Library.ADDED, Library.SOURCE_EMULATORS, LIBRARY_HIDDEN)
+internal val LIBRARY_HIDEABLE_TABS = setOf(LIBRARY_FAVORITES, Library.ADDED, Library.SOURCE_EMULATORS, LIBRARY_HIDDEN)
 
-/** Favorites, then Steam, ahead of the stores; Custom games and Hidden after them (null: the end). */
+/** Favorites, then Steam, ahead of the stores; Custom games, Emulators and Hidden after them (null: the end). */
 internal val DEFAULT_LIBRARY_PLACES: List<Pair<String, String?>> =
-    listOf(LIBRARY_FAVORITES to "", Library.SOURCE_STEAM to LIBRARY_FAVORITES, Library.ADDED to null, LIBRARY_HIDDEN to null)
+    listOf(LIBRARY_FAVORITES to "", Library.SOURCE_STEAM to LIBRARY_FAVORITES, Library.ADDED to null, Library.SOURCE_EMULATORS to null, LIBRARY_HIDDEN to null)
 
 /**
  * Puts the Library's own tabs into a store tab order. Each goes after the tab it follows ("" for first; null or a tab that is gone
@@ -339,6 +339,7 @@ private fun LibraryTabSortRow(id: String, held: Boolean, offset: Float, hint: St
     val label = when (id) {
         LIBRARY_FAVORITES -> stringResource(R.string.soundtracks_favorites)
         Library.ADDED -> stringResource(R.string.library_custom_games)
+        Library.SOURCE_EMULATORS -> stringResource(R.string.library_emulators)
         LIBRARY_HIDDEN -> stringResource(R.string.apps_filter_hidden)
         else -> stringResource(R.string.source_steam)
     }

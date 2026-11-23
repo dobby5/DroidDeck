@@ -26,13 +26,7 @@ class FileManagerActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 1)
         }
         val initialDir = intent.getStringExtra(EXTRA_START_DIR)?.let(::File)
-        setContent {
-            DroidDeckTheme(appScale = com.droiddeck.launcher.core.AppUiPrefs.scale(this)) {
-                Surface(modifier = Modifier.fillMaxSize().systemBarsPadding(), color = MaterialTheme.colorScheme.background) {
-                    FileManagerScreen(initialDir = initialDir, onExit = { finish() })
-                }
-            }
-        }
+        showExplorer { FileManagerScreen(initialDir = initialDir, onExit = { finish() }) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

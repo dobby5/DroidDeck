@@ -46,4 +46,13 @@ class StoreGridNavigationTest {
         assertEquals(10, storeGridNeighbor(6, 11, 4, 1, split = 6))
         assertNull(storeGridNeighbor(1, 11, 4, -1, split = 6))
     }
+
+    @Test fun gridStepReachesAShorterLastRowFromAnyColumn() {
+        assertEquals(8, gridStep(4, 10, 4, 1))
+        assertEquals(9, gridStep(6, 10, 4, 1))
+        assertEquals(9, gridStep(7, 10, 4, 1))
+        assertNull(gridStep(9, 10, 4, 1))
+        assertEquals(3, gridStep(7, 10, 4, -1))
+        assertNull(gridStep(2, 10, 4, -1))
+    }
 }

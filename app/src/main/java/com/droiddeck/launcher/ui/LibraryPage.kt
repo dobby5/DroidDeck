@@ -137,6 +137,7 @@ import androidx.compose.runtime.setValue
 internal class LibraryEntry(
     val key: String, val source: String, val title: String,
     val game: Library.SteamGame?, val item: CatalogItem?, val installed: Boolean,
+    val rom: Library.Rom? = null, val emulator: Library.Emulator? = null,
 ) {
     val storeKey: String? get() = item?.key ?: game?.storeId?.let { "${game.source}:$it" }
     val favoriteKey: String get() = storeKey ?: key
@@ -163,6 +164,32 @@ internal fun libraryEntries(
         out += LibraryEntry(GameRef.key(item), store.id, item.title, null, item, installed = item.key in installedStore)
     }
     return out.distinctBy { it.key }
+}
+
+/**
+ * One entry per game in the ROMs folder. The file is on the device, so the game counts as installed; a missing emulator
+ * shows on its page. A game two emulators share is listed once, preferring one that can start it.
+ */
+internal fun romEntries(emulators: List<Library.Emulator>): List<LibraryEntry> =
+    emulators.flatMap { e -> e.games.map { g -> e to g } }
+        .sortedByDescending { (e, g) -> e.runners(g).isNotEmpty() }
+        .map { (e, g) -> LibraryEntry(romKey(g), Library.SOURCE_EMULATORS, g.name, null, null, true, rom = g, emulator = e) }
+        .distinctBy { it.key }
+
+internal fun romCandidates(emulators: List<Library.Emulator>, path: String): List<Pair<Library.Emulator, Library.Rom>> =
+    emulators.mapNotNull { emulator ->
+        emulator.games.firstOrNull { it.hostPath.absolutePath == path }?.let { emulator to it }
+    }.sortedByDescending { (emulator, rom) -> emulator.runners(rom).isNotEmpty() }
+
+/** Groups for the "By platform" view: PC games first, then each system in [RomPlatforms] order. */
+internal fun platformGroups(entries: List<LibraryEntry>, pcLabel: String): List<Pair<String, List<LibraryEntry>>> {
+    val order = com.droiddeck.launcher.frontend.RomPlatforms.all.map { it.id }
+    return entries.groupBy { it.rom?.system.orEmpty() }.toList()
+        .sortedBy { (id, _) -> if (id.isEmpty()) -1 else order.indexOf(id).let { if (it < 0) order.size else it } }
+        .map { (id, list) ->
+            val label = if (id.isEmpty()) pcLabel else com.droiddeck.launcher.frontend.RomPlatforms.byId(id)?.name ?: list.first().emulator?.system ?: id
+            label to list
+        }
 }
 
 internal fun collectionEntries(all: List<LibraryEntry>, items: List<CatalogItem>, store: Store = Store.ITCH): List<LibraryEntry> {
@@ -202,11 +229,27 @@ internal object LibraryDisplay {
         private set
     var size by mutableStateOf(true)
         private set
+    var byPlatform by mutableStateOf(false)
+        private set
+    var badges by mutableStateOf(true)
+        private set
+
+    fun toggleBadges(context: android.content.Context) {
+        badges = !badges
+        SessionPrefs.setLibraryShowBadges(context, badges)
+    }
 
     fun load(context: android.content.Context) {
         level = SessionPrefs.libraryCardLevel(context).coerceIn(0, scales.lastIndex)
         title = SessionPrefs.libraryShowTitle(context)
         size = SessionPrefs.libraryShowSize(context)
+        byPlatform = SessionPrefs.libraryByPlatform(context)
+        badges = SessionPrefs.libraryShowBadges(context)
+    }
+
+    fun toggleByPlatform(context: android.content.Context) {
+        byPlatform = !byPlatform
+        SessionPrefs.setLibraryByPlatform(context, byPlatform)
     }
 
     fun step(context: android.content.Context, by: Int) {
@@ -340,12 +383,13 @@ internal fun LibraryPage(s: FrontEndState, a: FrontEndActions, selected: String,
     remember { SoundtrackCollections.load(ctx) }
     val savedSnapshot = SoundtrackCollections.snapshot
     val favoritesLabel = stringResource(R.string.soundtracks_favorites)
-    val all = remember(soundMode, s.steamGames, s.soundtracks, s.soundtracksEnabled, cloudRows, owned, installedStore, savedSnapshot, favoritesLabel, preview) {
+    val all = remember(soundMode, s.steamGames, s.soundtracks, s.soundtracksEnabled, cloudRows, owned, installedStore, savedSnapshot, favoritesLabel, preview, s.emulators, s.shortcutPicker) {
         if (soundMode) s.soundtracks.map { LibraryEntry("sound:${it.appId}", it.source, it.name, it, null, true) } +
             (if (s.soundtracks.isEmpty() && savedSnapshot.favorites.isEmpty() && savedSnapshot.collections.isEmpty()) emptyList() else SoundtrackCollections.games(ctx, favoritesLabel, skipEmptyFavorites = true))
                 .map { LibraryEntry("sound:${it.appId}", it.source, it.name, it, null, true) }
-        else libraryEntries(s.steamGames + cloudRows + if (s.soundtracksEnabled) emptyList() else s.soundtracks.filter { it.library != Library.ADDED }, owned, installedStore)
-            .let { rows -> if (preview == LibraryPreview.NOTHING_INSTALLED) rows.map { LibraryEntry(it.key, it.source, it.title, it.game, it.item, false) } else rows }
+        else (libraryEntries(s.steamGames + cloudRows + if (s.soundtracksEnabled) emptyList() else s.soundtracks.filter { it.library != Library.ADDED }, owned, installedStore) +
+            if (s.shortcutPicker) emptyList() else romEntries(s.emulators))
+            .let { rows -> if (preview == LibraryPreview.NOTHING_INSTALLED) rows.map { LibraryEntry(it.key, it.source, it.title, it.game, it.item, false, it.rom, it.emulator) } else rows }
     }
     var addingSoundtrack by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { XboxLibraryFilter.load(ctx) }
@@ -435,6 +479,7 @@ internal fun LibraryPage(s: FrontEndState, a: FrontEndActions, selected: String,
     fun sizeOf(e: LibraryEntry): Long? {
         val key = e.storeKey
         return when {
+            e.rom != null -> e.rom.hostPath.takeIf { it.isFile }?.length() ?: 0L
             key != null && e.installed && key in installedStore -> StoreSizes.onDisk[key]
             e.game?.gameFiles != null -> FolderSizes.known[e.game.gameFiles.path]
             e.item != null -> StoreSizes.size(e.item).takeIf { it > 0 }
@@ -575,7 +620,7 @@ internal fun LibraryPage(s: FrontEndState, a: FrontEndActions, selected: String,
         },
     ) { key ->
         if (soundMode || (!s.soundtracksEnabled && s.soundtracks.any { GameRef.key(it) == key })) SoundtrackDetail(key, s, a, lead, backLabel, onBack = back)
-        else GameDetail(key, s, a, lead, backLabel, hopRail = "games", onBack = back)
+        else GameDetail(key, s, a, lead, backLabel, hopRail = "games", onBack = back, onEmulator = { id -> onSelect("emu:$id") })
     }
     if (savedDialog) SavedDialog(emptyList(), onOpen = { id -> onSelect("sound:$id") }) { savedDialog = false }
     if (addingSoundtrack) SyncFolderPicker(stringResource(R.string.soundtracks_add_title), null, onDismiss = { addingSoundtrack = false }) { dir ->
@@ -619,6 +664,8 @@ private fun LibraryGrid(
 ) {
     val listMode = s.storesView == "list"
     val capsules = s.storesView == "capsules"
+    val grouped = LibraryDisplay.byPlatform && !soundMode
+    val pcLabel = stringResource(R.string.library_platform_pc)
     val baseWidth = if (capsules) CapsuleWidth else LibraryCardWidth
     val level = LibraryDisplay.level
     val focus = LocalFrontFocus.current
@@ -664,7 +711,7 @@ private fun LibraryGrid(
     val switchedAt = remember(source) { android.os.SystemClock.uptimeMillis() }
     val tile: @Composable (LibraryEntry) -> Unit = { e ->
         val first = e.key == visible.firstOrNull()?.key
-        val navigation = if (focus == null) Modifier else Modifier.onPreviewKeyEvent { event ->
+        val navigation = if (focus == null || grouped) Modifier else Modifier.onPreviewKeyEvent { event ->
             val key = event.nativeKeyEvent
             val direction = when (key.keyCode) {
                 KeyEvent.KEYCODE_DPAD_DOWN -> 1
@@ -703,12 +750,12 @@ private fun LibraryGrid(
             enter.animateTo(1f, Motion.tw(320))
         }
         Box(Modifier.graphicsLayer { alpha = enter.value; translationY = (1f - enter.value) * 18.dp.toPx() }) {
-            if (listMode) LibraryRow(e, first, navigation, choose, onOpen) else LibraryTile(e, capsules, first, navigation, choose, onOpen, showSource = source == LIBRARY_ALL || source == LIBRARY_FAVORITES || source == LIBRARY_HIDDEN)
+            if (listMode) LibraryRow(e, first, navigation, choose, onOpen) else LibraryTile(e, capsules, first, navigation, choose, onOpen, showSource = LibraryDisplay.badges && (source == LIBRARY_ALL || source == LIBRARY_FAVORITES || source == LIBRARY_HIDDEN))
         }
     }
     var rowFocused by remember { mutableStateOf(false) }
     val toggleRow: @Composable () -> Unit = {
-        val keys = if (focus == null) Modifier else Modifier.onPreviewKeyEvent { event ->
+        val keys = if (focus == null || grouped) Modifier else Modifier.onPreviewKeyEvent { event ->
             val key = event.nativeKeyEvent
             val direction = when (key.keyCode) {
                 KeyEvent.KEYCODE_DPAD_DOWN -> 1
@@ -785,6 +832,22 @@ private fun LibraryGrid(
         }
         else if (signInStore != null) item(key = "sign-in:${signInStore.id}", span = { GridItemSpan(maxLineSpan) }) {
             StoreTheme(signInStore) { Box(Modifier.padding(top = 4.dp, bottom = 16.dp)) { SignInCard(signInStore, splashHeight, inert = DevPreview.library != LibraryPreview.OFF) } }
+        }
+        else if (grouped) {
+            val (on, off) = visible.partition { it.installed }
+            if (visible.isEmpty()) libraryGrid(visible, empty, tile)
+            for ((label, group) in platformGroups(on, pcLabel)) {
+                item(key = "platform:$label", span = { GridItemSpan(maxLineSpan) }, contentType = "platform") { SectionLabel("$label · ${group.size}") }
+                items(group, key = { it.key }, contentType = { "game" }) { tile(it) }
+            }
+            if (toggleAt != ToggleAt.NONE) item(key = NOT_INSTALLED_ROW, span = { GridItemSpan(maxLineSpan) }) { toggleRow() }
+            else if (off.isNotEmpty()) item(key = NOT_INSTALLED_ROW, span = { GridItemSpan(maxLineSpan) }) {
+                SectionLabel(stringResource(R.string.stores_section_not_installed))
+            }
+            for ((label, group) in platformGroups(off, pcLabel)) {
+                item(key = "platform-off:$label", span = { GridItemSpan(maxLineSpan) }, contentType = "platform") { SectionLabel("$label · ${group.size}") }
+                items(group, key = { it.key }, contentType = { "game" }) { tile(it) }
+            }
         }
         else if (split == 0) {
             if (toggleAt == ToggleAt.TOP) item(key = NOT_INSTALLED_ROW, span = { GridItemSpan(maxLineSpan) }) { toggleRow() }
@@ -954,6 +1017,7 @@ private fun LibraryFilters(sources: List<String>, source: String, onSource: (Str
 private fun sourceTitle(src: String): String = when (src) {
     LIBRARY_ALL -> stringResource(R.string.library_all_games)
     Library.ADDED -> stringResource(R.string.library_custom_games)
+    Library.SOURCE_EMULATORS -> stringResource(R.string.library_emulators)
     LIBRARY_FAVORITES -> stringResource(R.string.soundtracks_favorites)
     LIBRARY_HIDDEN -> stringResource(R.string.apps_filter_hidden)
     else -> Store.byId(src)?.label ?: sourceLabel(src)
@@ -1005,7 +1069,7 @@ private fun sourceDot(src: String): Color? {
         )
         src == LIBRARY_FAVORITES -> FavoritesColours.dot
         src == LIBRARY_HIDDEN -> HIDDEN_DOT
-        src == Library.SOURCE_STEAM || src == Library.ADDED || src == Library.SOURCE_COLLECTION -> sourceColours(src).dot
+        src == Library.SOURCE_STEAM || src == Library.ADDED || src == Library.SOURCE_COLLECTION || src == Library.SOURCE_EMULATORS -> sourceColours(src).dot
         else -> null
     }
 }
@@ -1031,6 +1095,7 @@ internal fun ManageStoresChip() {
 }
 
 private fun entryArt(e: LibraryEntry, tall: Boolean): Any? {
+    if (e.rom != null) return e.rom.art
     val inst = e.storeKey?.let { k -> StoresState.installed.firstOrNull { it.key == k } }
     val wide: Any? = e.game?.hero ?: e.item?.imageUrl ?: inst?.sidecar?.hero ?: inst?.sidecar?.cover
     val portrait: Any? = e.game?.art ?: e.item?.tallImageUrl ?: inst?.sidecar?.cover
@@ -1160,7 +1225,8 @@ private fun RequestSize(e: LibraryEntry) {
     LaunchedEffect(item.key) { StoreSizes.request(ctx, item) }
 }
 
-private fun librarySize(e: LibraryEntry): Long? = if (e.installed) e.storeKey?.let { StoreSizes.onDisk[it] }
+private fun librarySize(e: LibraryEntry): Long? = if (e.rom != null) e.rom.hostPath.takeIf { it.isFile }?.length()
+    else if (e.installed) e.storeKey?.let { StoreSizes.onDisk[it] }
     ?: e.game?.gameFiles?.let { FolderSizes.known[it.path] }
     else e.item?.let { StoreSizes.size(it) }?.takeIf { it > 0 }
 
@@ -1205,8 +1271,9 @@ private fun LibraryRow(e: LibraryEntry, first: Boolean, navigation: Modifier, ch
     RequestSize(e)
     val inst = e.storeKey?.let { k -> StoresState.installed.firstOrNull { it.key == k } }
     val folder = inst?.folder ?: e.game?.gameFiles
-    val size = if (e.installed && folder != null) diskSize(inst, folder) else e.item?.let { StoreSizes.size(it) }?.takeIf { it > 0 }
+    val size = if (e.rom != null) librarySize(e) else if (e.installed && folder != null) diskSize(inst, folder) else e.item?.let { StoreSizes.size(it) }?.takeIf { it > 0 }
     val status = when {
+        e.rom != null -> listOfNotNull(romPlatformName(e.rom, e.emulator).ifBlank { null }, e.emulator?.name).joinToString(" · ")
         download != null -> downloadLabel(download)
         e.installed && libraryUpdateAvailable(e) -> stringResource(R.string.common_update)
         !e.installed -> stringResource(R.string.stores_section_not_installed)
@@ -1370,7 +1437,7 @@ internal fun DisplayButton() {
         HeaderIconButton(title, Icons.Filled.Visibility, "display") {
             val from = at ?: return@HeaderIconButton
             Steps.ask(StepAsk(
-                anchor = from, side = StepSide.Left, accent = pal.signal, pillCorner = 8.dp, items = 4,
+                anchor = from, side = StepSide.Left, accent = pal.signal, pillCorner = 8.dp, items = 6,
                 handle = { Icon(Icons.Filled.Visibility, null, tint = pal.signal, modifier = Modifier.size(18.dp)) },
             ) {
                 StepTitle(title)
@@ -1393,6 +1460,14 @@ internal fun DisplayButton() {
                         stringResource(R.string.library_display_size), selected = LibraryDisplay.size, enabled = open,
                         modifier = Modifier.fillMaxWidth().stepItem(3),
                     ) { LibraryDisplay.toggleSize(ctx) }
+                    StepChoice(
+                        stringResource(R.string.library_display_platforms), selected = LibraryDisplay.byPlatform, enabled = open,
+                        modifier = Modifier.fillMaxWidth().stepItem(4),
+                    ) { LibraryDisplay.toggleByPlatform(ctx) }
+                    StepChoice(
+                        stringResource(R.string.library_display_badges), selected = LibraryDisplay.badges, enabled = open,
+                        modifier = Modifier.fillMaxWidth().stepItem(5),
+                    ) { LibraryDisplay.toggleBadges(ctx) }
                 }
             })
         }

@@ -83,7 +83,7 @@ class DesktopUninstallTest {
                                 offlineAccount = null, offline = false, frameGenLabel = "", romsDir = null, logsEnabled = false,
                                 steamGames = emptyList(), emulators = emptyList(), running = null,
                             ), FrontEndActions(
-                                onPlay = {}, onPlayDesktopUi = {}, onSteamGame = {}, onDesktop = {}, onEmulator = {}, onRom = {}, onResume = {},
+                                onPlay = {}, onPlayDesktopUi = {}, onSteamGame = {}, onDesktop = {}, onEmulator = {}, onRom = { _, _ -> }, onResume = {},
                                 onSteamSettings = {}, onDesktopSettings = {}, onInstallPackage = {}, onRemovePackage = {},
                                 onRuntime = {}, onFrameGenPick = {}, onImportLossless = {}, onProtons = {}, onComponents = {},
                                 onPerformance = {}, onRoms = {}, onFiles = {}, onLogs = {}, onOffline = {},

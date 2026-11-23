@@ -97,8 +97,8 @@ class LibraryEntriesTest {
 
     @Test fun placesRoundTripThroughTheirOrder() {
         val order = listOf("epic", "steam", "favorites", LIBRARY_HIDDEN, "gog", "xbox", "added")
-        assertEquals(order, placeLibraryTabs(listOf("epic", "gog", "xbox"), libraryPlacesOf(order)))
-        assertEquals(listOf("favorites", "steam", "epic", "gog", "added", LIBRARY_HIDDEN), placeLibraryTabs(listOf("epic", "gog"), emptyList()))
+        assertEquals(order + Library.SOURCE_EMULATORS, placeLibraryTabs(listOf("epic", "gog", "xbox"), libraryPlacesOf(order)))
+        assertEquals(listOf("favorites", "steam", "epic", "gog", "added", Library.SOURCE_EMULATORS, LIBRARY_HIDDEN), placeLibraryTabs(listOf("epic", "gog"), emptyList()))
     }
 
     @Test fun librarySourcesIgnoreUnknownAndDuplicateOrderEntriesAndAppendNewStores() {

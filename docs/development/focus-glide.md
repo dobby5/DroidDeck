@@ -11,6 +11,11 @@ use `Modifier.focusGlide(shape)` before their focus target. Match the control's
 shape, and keep existing selection borders separate from the focus outline.
 Filled primary buttons use `hotFillAlpha = 0f` to preserve label contrast.
 
+When a control gains focus from a controller or keyboard, `glideBorder` asks the
+enclosing scroll containers to show 48 dp around it. Moves keep the next control
+in sight, and the first and last control of a page scroll it fully to its start or
+end. Touch and mouse focus do not scroll.
+
 Use `GlideDialog`, `GlideAlertDialog`, `GlidePopup`, and `GlideDropdownMenu` for app
 windows. Android dialogs and popups have separate views and coordinate spaces;
 they need their own host. The wrappers preserve the underlying Material layouts

@@ -64,67 +64,12 @@ internal fun syncLocations(context: Context): List<SyncLocation> {
 @Composable
 internal fun SyncFolderPicker(title: String, suggestedName: String?, onDismiss: () -> Unit, onPick: (File) -> Unit) {
     val ctx = LocalContext.current
-    val colors = MaterialTheme.colorScheme
-    val density = LocalDensity.current
-    val shown = rememberShown(onDismiss)
-    val close = { shown.targetState = false }
-    val locations = remember { syncLocations(ctx) }
+    val places = remember { syncLocations(ctx).map { com.droiddeck.launcher.files.ExplorerPlace(it.label, it.root, it.icon) } }
     val guard = remember { Syncthing.guard(ctx) }
-    fun locationOf(d: File) = locations.filter { d.path == it.root.path || d.path.startsWith(it.root.path + "/") }.maxByOrNull { it.root.path.length }
-    var dir by remember { mutableStateOf<File?>(containerHome(ctx).takeIf { it.isDirectory } ?: Syncthing.folderRoot(ctx).also { it.mkdirs() }) }
-    var refresh by remember { mutableIntStateOf(0) }
-    var naming by remember { mutableStateOf(false) }
-    val location = dir?.let { locationOf(it) }
-    val up = { dir = dir?.let { d -> if (location == null || d.path == location.root.path) null else d.parentFile } }
-    val back = { if (dir == null) close() else up() }
-    val first = remember(dir) { FocusRequester() }
-    LaunchedEffect(dir) { focusWithinFrames({ false }) { first } }
-    val folders = remember(dir, refresh) {
-        dir?.listFiles()?.filter { it.isDirectory && it.canRead() && guard.browsable(it) }
-            ?.sortedBy { it.name.lowercase() }.orEmpty()
-    }
-    var locked by remember { mutableStateOf<Dp?>(null) }
-    if (naming) {
-        TextEntryDialog(stringResource(R.string.sync_new_folder), suggestedName.orEmpty(), onDismiss = { naming = false }) { name ->
-            val parent = dir
-            if (parent != null && validName(name)) {
-                val created = File(parent, name)
-                if (created.isDirectory || created.mkdirs()) { dir = created; refresh++ }
-            }
-        }
-    }
-    AppDialog(
-        shown, close, "syncFolderPicker", wide = false, maxWidth = 520.dp, width = locked, fitContent = locked == null, back = back,
-        modifier = Modifier.onSizeChanged { if (locked == null && it.width > 0) locked = with(density) { it.width.toDp() } },
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-            DialogTitleRow(title, onClose = close)
-            if (dir != null && location != null) {
-                val crumbs = listOf(location.label) + dir!!.path.removePrefix(location.root.path).split('/').filter { it.isNotEmpty() }
-                Text(crumbs.joinToString(" › "), fontSize = 12.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
-            Column(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()).padding(top = 4.dp),
-            ) {
-                if (dir == null) {
-                    locations.forEachIndexed { i, l ->
-                        key(l.root.path) { PickerRow(l.icon, l.label, null, tall = true, focus = if (i == 0) first else null) { dir = l.root.also { it.mkdirs() } } }
-                    }
-                } else {
-                    PickerRow(Icons.AutoMirrored.Outlined.ArrowBack, "..", null, focus = first, onClick = up)
-                    PickerRow(Icons.Filled.Check, stringResource(R.string.sync_use_folder), null, accent = true, enabled = guard.allows(dir!!.path)) {
-                        onPick(dir!!); close()
-                    }
-                    PickerRow(Icons.Outlined.CreateNewFolder, stringResource(R.string.sync_new_folder), null) { naming = true }
-                    for (f in folders) key(f.path) {
-                        PickerRow(Icons.Outlined.Folder, f.name, null) { dir = f }
-                    }
-                }
-            }
-        }
-    }
+    com.droiddeck.launcher.files.ExplorerDialog(
+        title, onDismiss, pickDirectory = true,
+        initialDir = containerHome(ctx).takeIf { it.isDirectory } ?: Syncthing.folderRoot(ctx).also { it.mkdirs() },
+        places = places, browsable = { !it.isDirectory || (it.canRead() && guard.browsable(it)) }, pickAllowed = { guard.allows(it.path) },
+        suggestedFolderName = suggestedName, onPick = onPick,
+    )
 }
-
-private fun validName(name: String) = name.isNotBlank() && '/' !in name && name != "." && name != ".."

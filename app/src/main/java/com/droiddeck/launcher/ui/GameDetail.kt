@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
@@ -131,6 +132,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -156,17 +158,23 @@ internal class GameRef(val appId: Int?, val store: Store?, val storeId: String?)
     }
 }
 
-internal enum class GameTab { ABOUT, ACHIEVEMENTS, LAUNCH, SAVES, ADDONS, INSTALL }
+internal enum class GameTab { ABOUT, ACHIEVEMENTS, LAUNCH, SAVES, ADDONS, CONTENT, INSTALL }
 
 @Composable
 internal fun GameDetail(
     key: String, s: FrontEndState, a: FrontEndActions, lead: FocusRequester, backLabel: String, hopRail: String?, onBack: () -> Unit, inStore: Boolean = false,
+    onEmulator: (String) -> Unit = {}, emulatorId: String? = null,
 ) {
     val narrow = LocalNarrowPane.current
     val stacked = narrow || LocalConfiguration.current.screenWidthDp < 700
     val ref = remember(key) { GameRef.parse(key) }
     val games = s.steamGames + rememberXboxCloudRows(s) + if (s.soundtracksEnabled) emptyList() else s.soundtracks
-    val found = ref.game(games)
+    val romPath = key.takeIf { it.startsWith(LIBRARY_ROM_PREFIX) }?.removePrefix(LIBRARY_ROM_PREFIX)
+    val romChoices = remember(s.emulators, romPath) { romPath?.let { romCandidates(s.emulators, it) }.orEmpty() }
+    var preferredEmulator by rememberSaveable(key) { mutableStateOf(emulatorId) }
+    val rom = romChoices.firstOrNull { (e, g) -> e.id == preferredEmulator && e.runners(g).isNotEmpty() }
+        ?: romChoices.firstOrNull { it.first.id == preferredEmulator } ?: romChoices.firstOrNull()
+    val found = if (romPath != null) null else ref.game(games)
     val known = remember(key) { arrayOfNulls<Pair<Store, String>>(1) }
     val store = ref.store ?: Store.byId(found?.source) ?: known[0]?.first
     val id = ref.storeId ?: found?.storeId ?: known[0]?.second
@@ -177,12 +185,12 @@ internal fun GameDetail(
     val rawDownload = if (store != null && id != null) StoresState.download("${store.id}:$id") else null
     val download = rawDownload?.takeIf { it.isActive }
     val failed = rawDownload?.takeIf { it.state == DownloadState.FAILED }
-    val nothing = game == null && store == null
+    val nothing = game == null && store == null && rom == null
     LaunchedEffect(nothing) { if (nothing) onBack() }
     if (nothing) return
-    val source = game?.source ?: store?.id ?: Library.SOURCE_STEAM
-    val title = game?.name ?: item?.title ?: installed?.sidecar?.title ?: id.orEmpty()
-    val favoriteKey = if (store != null && id != null) "${store.id}:$id" else game?.let { GameRef.key(it) } ?: key
+    val source = if (rom != null) Library.SOURCE_EMULATORS else game?.source ?: store?.id ?: Library.SOURCE_STEAM
+    val title = rom?.second?.name ?: game?.name ?: item?.title ?: installed?.sidecar?.title ?: id.orEmpty()
+    val favoriteKey = if (rom != null) key else if (store != null && id != null) "${store.id}:$id" else game?.let { GameRef.key(it) } ?: key
     val scores = if (source != Library.ADDED) rememberGameScores(title.takeIf { it.isNotBlank() && it != id }) else null
     val achievements = remember(store, id, item?.accessible, installed) {
         when {
@@ -202,7 +210,7 @@ internal fun GameDetail(
     val scored = scores != null && (scores.metacritic != Lookup.None || scores.hltb != Lookup.None)
     val prefix = game?.protonPrefix?.takeIf { it.isDirectory }
     val addonTargets = remember(game?.gameId, game?.gameFiles) { game?.let(WowAddons::targets).orEmpty() }
-    val tabs = buildList {
+    val tabs = if (rom != null) listOfNotNull(GameTab.ABOUT, GameTab.LAUNCH, GameTab.CONTENT.takeIf { rom.second.addons.isNotEmpty() }, GameTab.INSTALL) else buildList {
         if (description.isNotBlank() || developer.isNotBlank() || publisher.isNotBlank() || releaseDate.isNotBlank() || scored || (!s.shortcutPicker && title.isNotBlank() && title != id)) add(GameTab.ABOUT)
         if (achievementState != null) add(GameTab.ACHIEVEMENTS)
         val cloud = game?.library == Library.XBOX_CLOUD
@@ -229,7 +237,7 @@ internal fun GameDetail(
         val at = tabs.indexOf(tab).coerceAtLeast(0)
         picked = tabs[(at + step + tabs.size) % tabs.size]
     }
-    val art: Any? = game?.hero ?: item?.imageUrl ?: installed?.sidecar?.hero ?: installed?.sidecar?.cover
+    val art: Any? = rom?.second?.art ?: game?.hero ?: item?.imageUrl ?: installed?.sidecar?.hero ?: installed?.sidecar?.cover
     val artModel: Any? = if (art is String) cardArtRequest(art, item?.tallImageUrl) else art
     val inset = LocalDetailInset.current
     GameBackdrop(artModel, art ?: game?.art, hueOf(title), fadeTop = inset.top < 8.dp, onArtPlaced = { StoresMotion.heroAt = it }) {
@@ -252,7 +260,8 @@ internal fun GameDetail(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Spacer(Modifier.height(if (narrow) 8.dp else 20.dp))
                     GameTitle(title, game?.logo ?: item?.logoUrl, if (narrow) 30.sp else 40.sp)
-                    GameStatusLine(source, game, item, installed, download?.location ?: failed?.location)
+                    if (rom != null) RomStatusLine(rom.first, rom.second, s)
+                    else GameStatusLine(source, game, item, installed, download?.location ?: failed?.location)
                     if (!failed?.error.isNullOrBlank()) Text(
                         failed!!.error!!, fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.error, maxLines = 3, overflow = TextOverflow.Ellipsis,
@@ -260,10 +269,13 @@ internal fun GameDetail(
                     Spacer(Modifier.height(2.dp))
                     Column {
                         CompositionLocalProvider(LocalPillButtons provides true, LocalGradientOutline provides true) {
-                            GameActions(store, id, game, item, installed, s, a, Modifier.focusRequester(lead), compactMenu = stacked, inStore = inStore, part = ActionPart.LEAD)
+                            if (rom != null) RomActions(rom.first, rom.second, romChoices, s, a, Modifier.focusRequester(lead), onEmulator) { preferredEmulator = it }
+                            else GameActions(store, id, game, item, installed, s, a, Modifier.focusRequester(lead), compactMenu = stacked, inStore = inStore, part = ActionPart.LEAD)
                         }
-                        Spacer(Modifier.height(LeadGap - ActionGap))
-                        GameCapsule(scores) { GameActions(store, id, game, item, installed, s, a, Modifier, compactMenu = stacked, inStore = inStore, part = ActionPart.REST) }
+                        if (rom == null) {
+                            Spacer(Modifier.height(LeadGap - ActionGap))
+                            GameCapsule(scores) { GameActions(store, id, game, item, installed, s, a, Modifier, compactMenu = stacked, inStore = inStore, part = ActionPart.REST) }
+                        }
                     }
                 }
             }
@@ -279,7 +291,8 @@ internal fun GameDetail(
                             GameTab.LAUNCH -> stringResource(R.string.game_tab_launch)
                             GameTab.SAVES -> stringResource(if (CloudSaves.supports(Store.byId(source))) R.string.game_tab_saves_cloud else R.string.games_saves)
                             GameTab.ADDONS -> stringResource(R.string.game_tab_addons)
-                            GameTab.INSTALL -> stringResource(R.string.game_tab_install)
+                            GameTab.CONTENT -> stringResource(R.string.library_rom_tab_addons)
+                            GameTab.INSTALL -> stringResource(if (rom != null) R.string.library_rom_fact_file else R.string.game_tab_install)
                         }
                     }
                     GameTabBar(
@@ -293,10 +306,11 @@ internal fun GameDetail(
                                     if (!s.shortcutPicker) GameResourcesRow(title.takeUnless { it == id }.orEmpty(), game)
                                 }
                                 GameTab.ACHIEVEMENTS -> achievementState?.let { st -> AchievementsTab(StoreAchievements.forSource(store?.id)?.label.orEmpty(), st) }
-                                GameTab.LAUNCH -> if (game != null) LaunchTab(game, s, a, hopRail)
+                                GameTab.LAUNCH -> if (rom != null) RomLaunchTab(rom.first, rom.second, s) else if (game != null) LaunchTab(game, s, a, hopRail)
                                 GameTab.SAVES -> if (game != null && prefix != null) SavesTab(game, prefix, a)
                                 GameTab.ADDONS -> if (game != null) AddonsTab(game, addonTargets, s.sessionRunning, a)
-                                GameTab.INSTALL -> InstallTab(game, installed, item, store)
+                                GameTab.CONTENT -> rom?.let { RomAddons(it.second) }
+                                GameTab.INSTALL -> if (rom != null) RomFileTab(rom.second) else InstallTab(game, installed, item, store)
                             }
                         }
                     }
@@ -349,7 +363,7 @@ private fun GameStatusLine(source: String, game: Library.SteamGame?, item: Catal
 }
 
 @Composable
-private fun StatusChip(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, tint: Color? = null) {
+internal fun StatusChip(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, tint: Color? = null) {
     val colors = MaterialTheme.colorScheme
     Row(
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -380,7 +394,7 @@ private fun GameCapsule(scores: GameScores?, actions: @Composable () -> Unit) {
 }
 
 @Composable
-private fun GameTabBar(
+internal fun GameTabBar(
     tabs: List<String>, selected: Int, onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier, focusRequesters: List<FocusRequester>? = null,
     bumpers: Boolean = true, compact: Boolean = false,
@@ -494,7 +508,7 @@ private fun TabBarBumper(label: String, description: String, leading: Boolean, o
 }
 
 @Composable
-private fun GameTitle(title: String, logo: Any?, titleSize: TextUnit) {
+internal fun GameTitle(title: String, logo: Any?, titleSize: TextUnit) {
     var failed by remember(logo) { mutableStateOf(false) }
     if (logo != null && !failed) AsyncImage(
         model = logo, contentDescription = title, contentScale = ContentScale.Fit, alignment = Alignment.CenterStart,
@@ -1371,5 +1385,126 @@ private fun SteadyDownloadChip(download: com.droiddeck.launcher.stores.download.
             )
             Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight, description, tint = if (hot) colors.onBackground else colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
         }
+    }
+}
+
+
+@Composable
+private fun RomStatusLine(e: Library.Emulator, g: Library.Rom, s: FrontEndState) {
+    val platform = romPlatformName(g, e)
+    val chosen = e.runner(s.emuRunners[e.id], g)
+    val size = g.hostPath.takeIf { it.isFile }?.length()?.takeIf { it > 0 }
+    Row(
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+    ) {
+        SourceBadge(Library.SOURCE_EMULATORS)
+        if (platform.isNotBlank()) StatusChip(platform)
+        StatusChip(if (chosen != null) runnerName(e, chosen) else stringResource(R.string.content_not_installed_suffix, e.name))
+        if (size != null) StatusChip(formatBytes(size))
+    }
+}
+
+@Composable
+private fun RomLaunchTab(e: Library.Emulator, g: Library.Rom, s: FrontEndState) {
+    val platform = romPlatformName(g, e)
+    val chosen = e.runner(s.emuRunners[e.id], g)
+    Column(Modifier.fillMaxWidth().tabPanel(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (platform.isNotBlank()) FactRow(stringResource(R.string.library_rom_fact_platform), platform)
+        FactRow(stringResource(R.string.library_rom_fact_emulator), e.name)
+        FactRow(
+            stringResource(R.string.library_rom_fact_way),
+            if (chosen != null) runnerName(e, chosen)
+            else if (e.hasContainer && e.containerRoms) stringResource(R.string.library_rom_needs_emulator, e.name)
+            else stringResource(R.string.library_rom_needs_android, e.android?.name ?: e.name),
+        )
+    }
+}
+
+@Composable
+private fun RomFileTab(g: Library.Rom) {
+    val size = g.hostPath.takeIf { it.isFile }?.length()?.takeIf { it > 0 }
+    Column(Modifier.fillMaxWidth().tabPanel(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        FactRow(stringResource(R.string.library_rom_fact_file), g.hostPath.name)
+        g.hostPath.parent?.let { FactRow(stringResource(R.string.game_install_folder), it) }
+        if (size != null) FactRow(stringResource(R.string.game_install_size), formatBytes(size))
+    }
+}
+
+@Composable
+internal fun RomAddons(g: Library.Rom) {
+    Column(Modifier.fillMaxWidth().tabPanel(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        val (updates, dlc) = g.addons.partition { it.update }
+        for ((heading, list) in listOf(R.string.library_rom_updates to updates, R.string.library_rom_dlc to dlc)) {
+            if (list.isEmpty()) continue
+            Text(
+                headingUppercase(stringResource(heading)), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp, top = 6.dp, bottom = 4.dp),
+            )
+            for (addon in list) {
+                val name = addon.file.name
+                val label = if (addon.update) com.droiddeck.launcher.frontend.SwitchTitles.updateVersionText(name)
+                    ?.let { stringResource(R.string.library_rom_update_version, it) } ?: stringResource(R.string.library_rom_update)
+                else com.droiddeck.launcher.frontend.SwitchTitles.dlcName(name, g.name)
+                FactRow(label, addon.file.length().takeIf { it > 0 }?.let { "${formatBytes(it)} · $name" } ?: name)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RomActions(
+    e: Library.Emulator, g: Library.Rom, candidates: List<Pair<Library.Emulator, Library.Rom>>,
+    s: FrontEndState, a: FrontEndActions, leadOn: Modifier, onEmulator: (String) -> Unit, onSelectEmulator: (String) -> Unit,
+) {
+    val runners = e.runners(g)
+    val chosen = e.runner(s.emuRunners[e.id], g)
+    val options = candidates.flatMap { (emulator, rom) -> emulator.runners(rom).map { emulator to it } }
+    val context = LocalContext.current
+    val integrations = remember(context, g.hostPath, s.emulators) {
+        listOfNotNull(
+            com.droiddeck.launcher.frontend.AndroidEmulatorLaunch.argosyIntent(context, g.hostPath)?.let { "Argosy Launcher" to it },
+            com.droiddeck.launcher.frontend.AndroidEmulatorLaunch.droidPlayIntent(context, g)?.let { "DroidPlay" to it },
+        )
+    }
+    var menu by remember { mutableStateOf(false) }
+    val launchWith = stringResource(R.string.emu_launch_with)
+    val (startAnchor, start) = rememberRomStart(e, s, a)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (chosen == null) {
+            PrimaryButton(
+                stringResource(R.string.content_install_named, e.android?.name ?: e.name), main = true, icon = Icons.Filled.Download, modifier = leadOn,
+            ) {
+                if (e.hasContainer && e.android?.launch?.supports(g.system, g.hostPath.extension) == false) {
+                    a.onEmulatorRunner(e.id, Library.Runner.CONTAINER)
+                }
+                onEmulator(e.id)
+            }
+        } else {
+            PrimaryButton(
+                stringResource(R.string.content_launch_in, if (runners.size > 1) runnerName(e, chosen) else e.name),
+                enabled = chosen == Library.Runner.ANDROID || !s.busy, main = true, icon = Icons.Filled.PlayArrow, modifier = leadOn.then(startAnchor),
+            ) { start(g, chosen) }
+        }
+        if (options.size > 1 || integrations.isNotEmpty()) Box {
+            SecondaryButton(launchWith) { menu = true }
+            AnchoredMenu(menu, onDismiss = { menu = false }, title = launchWith, compact = true, minWidth = 240.dp) { first ->
+                options.forEachIndexed { i, (emulator, runner) ->
+                    val label = if (emulator.hasContainer && emulator.android != null) "${emulator.name} · ${runnerName(emulator, runner)}" else emulator.name
+                    MenuItem(label, checked = emulator.id == e.id && runner == chosen, focusRequester = if (i == 0) first else null) {
+                        menu = false
+                        onSelectEmulator(emulator.id)
+                        a.onEmulatorRunner(emulator.id, runner)
+                    }
+                }
+                integrations.forEachIndexed { i, (name, intent) ->
+                    MenuItem(name, checked = false, focusRequester = if (options.isEmpty() && i == 0) first else null) {
+                        menu = false
+                        a.onExternalRom(intent, name)
+                    }
+                }
+            }
+        }
+        if (chosen != null) SecondaryButton(stringResource(R.string.library_rom_open_emulator, e.name)) { onEmulator(e.id) }
     }
 }

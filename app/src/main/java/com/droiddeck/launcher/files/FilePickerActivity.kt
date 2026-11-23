@@ -37,23 +37,19 @@ class FilePickerActivity : ComponentActivity() {
         val initialDir = (intent.getStringExtra(EXTRA_INITIAL_DIRECTORY) ?: prefs.getString("lastFilePickerDir", null))
             ?.let { File(it) }?.takeIf { it.isDirectory }
 
-        setContent {
-            DroidDeckTheme(appScale = com.droiddeck.launcher.core.AppUiPrefs.scale(this)) {
-                Surface(modifier = Modifier.fillMaxSize().systemBarsPadding(), color = MaterialTheme.colorScheme.background) {
-                    FileManagerScreen(
-                        pickMode = true,
-                        pickDirMode = pickDir,
-                        pickExtensions = extensions,
-                        initialDir = initialDir,
-                        pickerTitle = title ?: getString(if (pickDir) R.string.fm_choose_folder else R.string.fm_choose_file),
-                        onPick = { file ->
-                            setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SELECTED_FILE, file.absolutePath))
-                            finish()
-                        },
-                        onExit = { finish() },
-                    )
-                }
-            }
+        showExplorer {
+            FileManagerScreen(
+                pickMode = true,
+                pickDirMode = pickDir,
+                pickExtensions = extensions,
+                initialDir = initialDir,
+                pickerTitle = title ?: getString(if (pickDir) R.string.fm_choose_folder else R.string.fm_choose_file),
+                onPick = { file ->
+                    setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SELECTED_FILE, file.absolutePath))
+                    finish()
+                },
+                onExit = { finish() },
+            )
         }
     }
 

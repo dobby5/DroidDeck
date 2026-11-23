@@ -1000,6 +1000,7 @@ class SessionService : Service() {
             com.droiddeck.launcher.core.AppLanguage.effective(this),
             com.droiddeck.launcher.core.AppLanguage.system(this).country,
         ))
+        guest.add("DD_GAME_LANG=" + DesktopLocale.lang(com.droiddeck.launcher.core.AppLanguage.effective(this)))
         guest.add("TZ=" + java.util.TimeZone.getDefault().id)
         if (SessionState.mode == MODE_STEAM) SessionPrefs.pendingShaderPrecache(this)?.let { guest.add("DD_SHADER_PRECACHE=" + if (it) "1" else "0") }
         guest.add("XDG_RUNTIME_DIR=" + LinuxRuntime.GUEST_RUNTIME_DIR)
@@ -1344,13 +1345,14 @@ class SessionService : Service() {
             }
         }
         binds.addAll(com.droiddeck.launcher.runtime.UserApps.binds(this))
-        val roms = SessionPrefs.romsDir(this).takeIf { it.isNotEmpty() }?.let { File(it) }
-        if (roms != null && roms.isDirectory && roms.canRead()) {
-            File(home, "ROMs").mkdirs()
-            binds.add(roms.path + ":/root/ROMs")
-            Log.i(TAG, "roms: $roms -> /root/ROMs")
-        } else if (roms != null) {
-            Log.w(TAG, "roms: $roms is not a readable folder; /root/ROMs not offered this session")
+        for ((roms, guest) in com.droiddeck.launcher.frontend.RomFolders.binds(this)) {
+            if (roms.isDirectory && roms.canRead()) {
+                File(LinuxRuntime.rootDir(this), guest.removePrefix("/")).mkdirs()
+                binds.add(roms.path + ":" + guest)
+                Log.i(TAG, "roms: $roms -> $guest")
+            } else {
+                Log.w(TAG, "roms: $roms is not a readable folder; $guest not offered this session")
+            }
         }
         val libraries = ArrayList<Pair<String, String>>()
         if (storageDiagnosticLibrary != null && library != null) libraries.add(SecondaryLibrary.CARD_GUESTS[0] to library.label)

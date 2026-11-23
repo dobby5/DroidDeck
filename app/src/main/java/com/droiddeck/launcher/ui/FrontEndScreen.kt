@@ -154,6 +154,15 @@ class FrontEndState(
     val packageBusyId: String? = null,
     val packageStage: String? = null,
     val packagePercent: Int = -1,
+    val androidEmuBusy: String? = null,
+    val androidEmuPercent: Int = -1,
+    val emuRunners: Map<String, String> = emptyMap(),
+    val romsDirs: List<String> = emptyList(),
+    val emuUpdates: Map<String, String> = emptyMap(),
+    val emuUpdateAsk: Set<String> = emptySet(),
+    val emuUpdateInterval: String = com.droiddeck.launcher.runtime.AndroidEmulatorUpdates.DAILY,
+    val emuUpdateCheckedAt: Long = 0L,
+    val emuUpdateChecking: Boolean = false,
     val sessionRunning: Boolean = false,
     val battleNetInstalled: Boolean = false,
     val removalPending: Boolean = false,
@@ -223,7 +232,18 @@ class FrontEndActions(
     val onFlatpakApp: (String, String) -> Unit = { _, _ -> },
     val onUserApp: (com.droiddeck.launcher.runtime.UserApps.App) -> Unit = {},
     val onBattleNet: () -> Unit = {},
-    val onRom: (Library.Rom) -> Unit,
+    val onRom: (Library.Rom, Library.Runner) -> Unit,
+    val onEmulatorRunner: (String, Library.Runner) -> Unit = { _, _ -> },
+    val onAndroidEmulator: (Library.Emulator) -> Unit = {},
+    val onGetAndroidEmulator: (Library.Emulator) -> Unit = {},
+    val onAndroidEmulatorStore: (Library.Emulator) -> Unit = {},
+    val onRemoveAndroidEmulator: (Library.Emulator) -> Unit = {},
+    val onCancelAndroidEmulatorDownload: () -> Unit = {},
+    val onAddRomsDir: () -> Unit = {},
+    val onRemoveRomsDir: (String) -> Unit = {},
+    val onEmuUpdate: (Library.Emulator, Library.Rom, EmuUpdateChoice) -> Unit = { _, _, _ -> },
+    val onEmuUpdateInterval: (String) -> Unit = {},
+    val onCheckEmuUpdates: () -> Unit = {},
     val onResume: () -> Unit,
     val onSteamSettings: () -> Unit,
     val onDesktopSettings: () -> Unit,
@@ -310,6 +330,7 @@ class FrontEndActions(
     val onIntegrationAppInfo: () -> Unit = {},
     val onIntegrationLocation: () -> Unit = {},
     val onAndroidApp: (HomeApp.LaunchableApp, Int?) -> Unit = { _, _ -> },
+    val onExternalRom: (android.content.Intent, String) -> Unit = { _, _ -> },
     val onBackActionsInverted: (Boolean) -> Unit = {},
     val onRefreshPhantomStatus: () -> Unit = {},
     val onOpenDeveloperOptions: (Int?) -> Unit = {},
@@ -491,6 +512,7 @@ private fun FrontEndScreenBody(s: FrontEndState, a: FrontEndActions, page: (@Com
             "setup:launcher" -> { SetupTabs.openLauncher = true; selected = "setup" }
             com.droiddeck.launcher.sync.SyncthingService.NAV -> com.droiddeck.launcher.sync.Syncthing.requestOpen()
             "setup:integration" -> { SetupTabs.openOverview = true; selected = "setup" }
+            SETUP_ROMS -> { SetupTabs.openRoms = true; selected = "setup" }
             in SETTINGS_NAV -> { SetupTabs.openSection = SettingsSection.of(target.removePrefix("settings:")) ?: SettingsSection.OVERVIEW; selected = "setup" }
             com.droiddeck.launcher.core.AppUiPrefs.HOME_PAGE_APPS -> {
                 // Home lands on the apps page itself, so a page open over the rail (Components, Performance) closes first.
@@ -592,6 +614,11 @@ private fun FrontEndScreenBody(s: FrontEndState, a: FrontEndActions, page: (@Com
     val backToMore = s.pageKey == null && Hops.origin == null && selected in NavTabs.more(s)
     BackHandler(enabled = !processSettingsPageVisible && backToMore) {
         selected = NavTabs.MORE
+    }
+    LaunchedEffect(selected) { if (selected != "setup") SetupTabs.returnTo = null }
+    BackHandler(enabled = !processSettingsPageVisible && s.pageKey == null && selected == "setup" && SetupTabs.returnTo != null) {
+        SetupTabs.returnTo?.let { selected = it }
+        SetupTabs.returnTo = null
     }
     LaunchedEffect(s.soundtracksEnabled) {
         if (!s.soundtracksEnabled && (selected == "soundtracks" || selected.startsWith("sound:"))) selected = "games"
@@ -885,6 +912,7 @@ private fun FrontEndScreenBody(s: FrontEndState, a: FrontEndActions, page: (@Com
         }
     }
     val hasBackTarget = backToMore || (s.pageKey != null && page != null) ||
+        (s.pageKey == null && selected == "setup" && SetupTabs.returnTo != null) ||
         (s.pageKey == null && Hops.origin?.page == selected) ||
         ((s.pageKey == null || page == null) &&
             (selected.startsWith("emu:") || selected.startsWith("rom:") || selected.startsWith("user:") || selected == "store"))

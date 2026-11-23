@@ -28,6 +28,11 @@ object CoverArt {
         "cemu" to listOf("Nintendo_-_Wii_U"),
     )
 
+    private fun collectionsFor(rom: Library.Rom): List<String> =
+        collections[rom.emulatorId] ?: RomPlatforms.byId(rom.system)?.libretro.orEmpty()
+
+    private fun switchRom(rom: Library.Rom) = rom.system == "switch" || rom.system == "switch2"
+
     private fun root(context: Context) = File(context.filesDir, "covers")
 
     private fun keyOf(rom: Library.Rom): String =
@@ -39,7 +44,7 @@ object CoverArt {
     fun cached(context: Context, rom: Library.Rom): File? = coverFile(context, rom).takeIf { it.isFile && it.length() > 0 }
 
     private fun wanted(context: Context, rom: Library.Rom): Boolean {
-        if (rom.art != null || cached(context, rom) != null || rom.emulatorId !in collections) return false
+        if (rom.art != null || cached(context, rom) != null || (collectionsFor(rom).isEmpty() && !switchRom(rom))) return false
         val miss = missFile(context, rom)
         return !(miss.isFile && System.currentTimeMillis() - miss.lastModified() < MISS_RETRY_MS)
     }
@@ -72,7 +77,10 @@ object CoverArt {
 
     private fun findUrl(context: Context, rom: Library.Rom): String? {
         val name = rom.hostPath.nameWithoutExtension.removeSuffix(".dec")
-        for (collection in collections.getValue(rom.emulatorId)) {
+        if (switchRom(rom)) {
+            return SwitchTitles.coverUrl(context, rom.hostPath, rom.system)?.takeIf { exists(it) }
+        }
+        for (collection in collectionsFor(rom)) {
             val exact = thumbnailUrl(collection, name)
             if (exists(exact)) return exact
             nearest(name, names(context, collection))?.let { return thumbnailUrl(collection, it) }

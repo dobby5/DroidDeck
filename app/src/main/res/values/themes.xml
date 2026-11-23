@@ -4,6 +4,11 @@
         <item name="android:colorBackground">#FF101418</item>
         <item name="android:navigationBarColor">@android:color/black</item>
     </style>
+    <!-- Translucent so the launcher underneath is only paused, not stopped: stopping it takes down the second-screen panel. -->
+    <style name="ExplorerTheme" parent="AppTheme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
     <style name="SessionTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
     </style>

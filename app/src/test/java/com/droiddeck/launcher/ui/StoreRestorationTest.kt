@@ -141,7 +141,7 @@ class StoreRestorationTest {
 
     private fun actions() = FrontEndActions(
         onPlay = {}, onPlayDesktopUi = {}, onSteamGame = {}, onDesktop = {}, onEmulator = {},
-        onRom = {}, onResume = {}, onSteamSettings = {}, onDesktopSettings = {},
+        onRom = { _, _ -> }, onResume = {}, onSteamSettings = {}, onDesktopSettings = {},
         onInstallPackage = {}, onRemovePackage = {}, onRuntime = {}, onFrameGenPick = {},
         onImportLossless = {}, onProtons = {}, onComponents = {}, onPerformance = {},
         onRoms = {}, onFiles = {}, onLogs = {}, onOffline = {},

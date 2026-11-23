@@ -1,0 +1,157 @@
+{
+  "apps": [
+    {
+      "id": "rpcs3-android",
+      "package": "net.rpcs3",
+      "name": "RPCS3",
+      "pairs": "rpcs3",
+      "apk": {
+        "github": "RPCS3-Android/rpcs3-android",
+        "asset": "rpcs3-release\\.apk$",
+        "signers": ["96bf77a96f99f09c30df6267377cd026c8e604a206143da0b0cb5916c8475e03"]
+      }
+    },
+    {
+      "id": "armsx2-android",
+      "package": "com.armsx2.nightly",
+      "name": "ARMSX2",
+      "pairs": "armsx2",
+      "apk": {
+        "github": "ARMSX2/ARMSX2",
+        "asset": "Android-arm64\\.apk$",
+        "prerelease": true,
+        "signers": [
+          "df91c9ce39d3f53c9bab5f2c1e0820e761800c93f1805305b87e87486d244d5a",
+          "f942d6bbcf5c46971fc8ac02c53bb9f7c10ede226834412e8dac38f07c997ff5"
+        ]
+      },
+      "launch": {
+        "component": "com.armsx2.nightly/com.armsx2.MainActivity",
+        "action": "android.intent.action.VIEW",
+        "uri": "content",
+        "data": true
+      }
+    },
+    {
+      "id": "dolphin-android",
+      "package": "org.dolphinemu.dolphinemu",
+      "name": "Dolphin",
+      "pairs": "dolphin",
+      "apk": {
+        "url": "https://dl.dolphin-emu.org/releases/2609/dolphin-2609.apk",
+        "sha256": "c41f8682a519d14db6c7b145eb5765b9e716389d6b685325e5705d0c178acc01",
+        "size": 21998764,
+        "versionCode": 43092,
+        "signers": ["8e7556d64ce8f7f15e36c4b3380aab0e326431146f9b26d2adee35326951fcab"]
+      },
+      "store": "market://details?id=org.dolphinemu.dolphinemu",
+      "launch": {
+        "component": "org.dolphinemu.dolphinemu/.ui.main.MainActivity",
+        "action": "android.intent.action.VIEW",
+        "uri": "content",
+        "extras": { "AutoStartFile": "{rom}" }
+      }
+    },
+    {
+      "id": "duckstation-android",
+      "package": "com.github.stenzek.duckstation",
+      "name": "DuckStation",
+      "pairs": "duckstation",
+      "apk": {
+        "page": "https://downloads.duckstation.org/android-testing/",
+        "pattern": "downloads/duckstation-\\d+\\.apk",
+        "signers": ["a6357957d296b3b03edeb62da317cb347ecde63b6577977ffcbfe0d9a6975450"]
+      },
+      "store": "market://details?id=com.github.stenzek.duckstation",
+      "launch": {
+        "component": "com.github.stenzek.duckstation/.EmulationActivity",
+        "uri": "content",
+        "extras": { "bootPath": "{rom}" }
+      }
+    },
+    {
+      "id": "melonds-android",
+      "package": "me.magnum.melonds",
+      "name": "melonDS",
+      "pairs": "melonds",
+      "apk": {
+        "github": "rafaelvcaetano/melonDS-android",
+        "asset": "gitHub-prod-release\\.apk$",
+        "signers": ["0493bb8749289f0304cc868489dd68b930c19ccc4dce2da876bfe6b9bdbabebc"]
+      },
+      "store": "market://details?id=me.magnum.melonds",
+      "launch": {
+        "component": "me.magnum.melonds/.ui.emulator.EmulatorActivity",
+        "action": "android.intent.action.VIEW",
+        "uri": "content",
+        "extras": { "uri": "{rom}" }
+      }
+    },
+    {
+      "id": "cemu-android",
+      "package": "info.cemu.cemu",
+      "name": "Cemu",
+      "pairs": "cemu",
+      "apk": {
+        "github": "SSimco/Cemu",
+        "asset": "\\.apk$",
+        "signers": ["55d41ffc6b197c77958372301f529ca231ecd5b22bc83564de42087f4bcadb33"]
+      },
+      "launch": {
+        "component": "info.cemu.cemu/.emulation.EmulationActivity",
+        "action": "android.intent.action.VIEW",
+        "uri": "content",
+        "data": true
+      }
+    },
+    {
+      "id": "ppsspp-android",
+      "package": "org.ppsspp.ppsspp",
+      "name": "PPSSPP",
+      "pairs": "ppsspp",
+      "apk": {
+        "page": "https://www.ppsspp.org/download/",
+        "pattern": "/files/\\d+_\\d+(?:_\\d+)?/ppsspp\\.apk",
+        "signers": ["c5342629df16762391907b3297aad122b4c1a8a9e608dfb94217a08e3bbf13a2"]
+      },
+      "store": "market://details?id=org.ppsspp.ppsspp",
+      "launch": {
+        "component": "org.ppsspp.ppsspp/.PpssppActivity",
+        "action": "android.intent.action.VIEW",
+        "uri": "content",
+        "data": true
+      }
+    },
+    {
+      "id": "retroarch-android",
+      "package": "com.retroarch",
+      "name": "RetroArch",
+      "pairs": "retroarch",
+      "platforms": ["gba", "gb", "gbc", "nes", "snes", "n64", "megadrive", "mastersystem", "gamegear", "pcengine"],
+      "apk": {
+        "url": "https://buildbot.libretro.com/stable/1.22.2/android/RetroArch.apk",
+        "sha256": "2eca60b3a540697cd7676edea2fbabdfaf54c3ae958584168231981099d2868a",
+        "size": 198332624,
+        "versionCode": 1763607132,
+        "signers": ["d7a5eab30902c9b2775af6fb4eac2d294a64634fb47dd1382bc3ac5bf669982e"]
+      },
+      "store": "market://details?id=com.retroarch",
+      "launch": {
+        "component": "com.retroarch/com.retroarch.browser.retroactivity.RetroActivityFuture",
+        "uri": "file",
+        "extras": {
+          "ROM": "{rom}",
+          "LIBRETRO": "/data/data/com.retroarch/cores/{core}_libretro_android.so",
+          "CONFIGFILE": "/storage/emulated/0/Android/data/com.retroarch/files/retroarch.cfg"
+        },
+        "cores": {
+          "gba": "mgba", "gb": "gambatte", "gbc": "gambatte", "nes": "fceumm", "snes": "snes9x",
+          "n64": "mupen64plus_next_gles3", "megadrive": "genesis_plus_gx", "mastersystem": "genesis_plus_gx",
+          "gamegear": "genesis_plus_gx", "pcengine": "mednafen_pce_fast"
+        }
+      }
+    }
+  ]
+}
+
+

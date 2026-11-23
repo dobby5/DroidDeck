@@ -1336,11 +1336,55 @@ def exec_proton(command, env):
     os.execvpe(command[0], command, env)
 
 
+PLAIN_LOCALES = ("", "C", "C.UTF-8", "C.utf8", "POSIX")
+
+
+def locale_installed(name):
+    import locale
+    saved = locale.setlocale(locale.LC_CTYPE)
+    try:
+        locale.setlocale(locale.LC_CTYPE, name)
+        return True
+    except locale.Error:
+        return False
+    finally:
+        locale.setlocale(locale.LC_CTYPE, saved)
+
+
+def game_locale(env, installed=locale_installed):
+    # Wine takes the Windows locale and UI language from glibc's locale, so games follow the device language
+    # only when it is set here; an uninstalled locale would drop Wine to plain ASCII instead.
+    want = env.get("DD_GAME_LANG", "")
+    if want in PLAIN_LOCALES:
+        return env
+    env.setdefault("DD_EPIC_LOCALE", epic_locale(want))
+    if env.get("LANG", "") not in PLAIN_LOCALES or env.get("LC_ALL", "") not in PLAIN_LOCALES:
+        return env
+    if not installed(want):
+        print("droiddeck-game-env: locale %s is not installed; Windows stays English, Epic gets %s"
+              % (want, env["DD_EPIC_LOCALE"]), file=sys.stderr)
+        return env
+    env["LANG"] = want
+    env.pop("LC_ALL", None)
+    print("droiddeck-game-env: game language %s (Epic %s)" % (want, env["DD_EPIC_LOCALE"]), file=sys.stderr)
+    return env
+
+
+def epic_locale(lang):
+    """The Epic Games Launcher's -epiclocale form of a glibc locale: de_DE.UTF-8 -> de, pt_BR -> pt-BR, zh_TW -> zh-Hant."""
+    language, _, region = lang.split(".")[0].partition("_")
+    if language == "zh":
+        return "zh-Hant" if region in ("TW", "HK", "MO") else "zh-Hans"
+    if (language, region) in (("pt", "BR"), ("es", "MX"), ("en", "GB"), ("fr", "CA")):
+        return "%s-%s" % (language, region)
+    return language
+
+
 def main():
     command = sys.argv[1:]
     if not command:
         return 2
-    env = game_gpu(os.environ.copy())
+    env = game_locale(game_gpu(os.environ.copy()))
     mic_enabled = env.get("DD_MIC_ENABLED")
     debug_dir = session_debug_dir(env)
     prefix_path = env.get("STEAM_COMPAT_DATA_PATH", "").rstrip("/")

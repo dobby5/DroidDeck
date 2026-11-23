@@ -37,6 +37,9 @@ import com.droiddeck.launcher.gpu.TurnipDriver
 import com.droiddeck.launcher.gpu.Lossless
 import com.droiddeck.launcher.runtime.LinuxRuntime
 import com.droiddeck.launcher.runtime.DesktopCatalog
+import com.droiddeck.launcher.runtime.AndroidEmulators
+import com.droiddeck.launcher.runtime.AndroidEmulatorUpdates
+import androidx.core.graphics.drawable.toBitmap
 import com.droiddeck.launcher.runtime.LinuxRuntimeInstaller
 import com.droiddeck.launcher.runtime.DeckyManager
 import com.droiddeck.launcher.session.SessionService
@@ -77,7 +80,6 @@ import com.droiddeck.launcher.frontend.GameFiles
 import com.droiddeck.launcher.frontend.GameFileSync
 import com.droiddeck.launcher.frontend.GameLaunchIntent
 import com.droiddeck.launcher.ui.DroidDeckTheme
-import com.droiddeck.launcher.ui.RomsDialog
 import com.droiddeck.launcher.files.InAppFilePicker
 import com.droiddeck.launcher.session.SessionArtifacts
 import com.droiddeck.launcher.session.SessionPhase
@@ -98,6 +100,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     private val components = ComponentsMenu(this, ui)
     private val decky = DeckyMenu(this, ui)
     private val updates = UpdatesMenu(this, ui)
+    private val androidEmus = AndroidEmulatorMenu(this, ui) { refreshEmulators() }
     private val protons = ProtonMenu(
         this, ui,
         idle = { !busy && flood == null && compatLaunch == null && pkgStage == null && components.compBusy == null },
@@ -151,6 +154,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     private var onSavePicked: ((File) -> Unit)? = null
     private var controllerSettings by mutableStateOf<ControllerPrefs.Settings?>(null)
     private var catalog by mutableStateOf<List<DesktopCatalog.Entry>?>(null)
+    private val bundledDesktopEmulators by lazy { DesktopCatalog.bundledEmulators(this) }
     private var catalogLoading by mutableStateOf(false)
     private var packageRows by mutableStateOf<List<PackageRow>?>(null)
     private object PackageOperation {
@@ -583,8 +587,9 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     private var sgdbUserKey by mutableStateOf(false)
     private val pickRomsDir = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == RESULT_OK) InAppFilePicker.pickedPath(r.data)?.let { path ->
-            SessionPrefs.setRomsDir(this, path)
-            romsDir = path
+            SessionPrefs.setRomsDirs(this, SessionPrefs.romsDirs(this) + path)
+            readRomsDirs()
+            refreshEmulators()
         }
     }
     private var settingsMode by mutableStateOf<String?>(null)
@@ -670,6 +675,19 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     @Volatile private var componentSweepDone = false
     @Volatile private var componentSweepSession: String? = null
     private var emulatorList by mutableStateOf<List<Library.Emulator>>(emptyList())
+    private var emuRunners by mutableStateOf<Map<String, String>>(emptyMap())
+    private var romsDirs by mutableStateOf<List<String>>(emptyList())
+    private var emuUpdates by mutableStateOf<Map<String, String>>(emptyMap())
+    private var emuUpdateAsk by mutableStateOf<Set<String>>(emptySet())
+    private var emuUpdateInterval by mutableStateOf(AndroidEmulatorUpdates.DAILY)
+    private var emuUpdateCheckedAt by mutableStateOf(0L)
+    private var emuUpdateChecking by mutableStateOf(false)
+
+    private fun readRomsDirs() {
+        romsDirs = SessionPrefs.romsDirs(this)
+        romsDir = romsDirs.firstOrNull()
+    }
+    private var emulatorScan = 0
     private var runningLabel by mutableStateOf<String?>(null)
     private var logsEnabled by mutableStateOf(true)
     private var enhancedDiagnosticsArmed by mutableStateOf(false)
@@ -686,7 +704,6 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     private var adbPaired by mutableStateOf(false)
     private var memoryHud by mutableStateOf(SessionPrefs.MEMORY_HUD_OFF)
     private var backgroundAppLimit by mutableStateOf(com.droiddeck.launcher.core.BackgroundAppLimit.OFF)
-    private var showRoms by mutableStateOf(false)
     private var homeAppSelected by mutableStateOf(false)
     private var homeScreenEnabled by mutableStateOf(false)
     private var defaultHomeLabel by mutableStateOf<String?>(null)
@@ -697,9 +714,15 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
             refreshAndroidApps()
             if (HomeWidgets.providers != null) HomeWidgets.refreshProviders(this@FrontEndActivity)
         }
-        override fun onPackageRemoved(packageName: String, user: android.os.UserHandle) = changed()
-        override fun onPackageAdded(packageName: String, user: android.os.UserHandle) = changed()
-        override fun onPackageChanged(packageName: String, user: android.os.UserHandle) = changed()
+        private fun changed(packageName: String) {
+            changed()
+            if (AndroidEmulators.catalogPackage(packageName) ||
+                com.droiddeck.launcher.frontend.AndroidEmulatorLaunch.isIntegrationPackage(packageName)
+            ) refreshEmulators()
+        }
+        override fun onPackageRemoved(packageName: String, user: android.os.UserHandle) = changed(packageName)
+        override fun onPackageAdded(packageName: String, user: android.os.UserHandle) = changed(packageName)
+        override fun onPackageChanged(packageName: String, user: android.os.UserHandle) = changed(packageName)
         override fun onPackagesAvailable(packageNames: Array<out String>, user: android.os.UserHandle, replacing: Boolean) = changed()
         override fun onPackagesUnavailable(packageNames: Array<out String>, user: android.os.UserHandle, replacing: Boolean) = changed()
         override fun onShortcutsChanged(packageName: String, shortcuts: MutableList<android.content.pm.ShortcutInfo>, user: android.os.UserHandle) {
@@ -1286,6 +1309,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
         storesView = SessionPrefs.storesView(this)
         applyLauncherFullscreen()
         updates.start()
+        androidEmus.start()
         setContent {
             val prootPack by com.droiddeck.launcher.core.AddonPack.PROOT.state.collectAsState()
             androidx.compose.runtime.LaunchedEffect(prootPack) {
@@ -1356,6 +1380,15 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
                         packageBusyId = pkgId,
                         packageStage = pkgStage,
                         packagePercent = pkgPercent,
+                        androidEmuBusy = androidEmus.busy,
+                        androidEmuPercent = androidEmus.percent,
+                        emuRunners = emuRunners,
+                        romsDirs = romsDirs,
+                        emuUpdates = emuUpdates,
+                        emuUpdateAsk = emuUpdateAsk,
+                        emuUpdateInterval = emuUpdateInterval,
+                        emuUpdateCheckedAt = emuUpdateCheckedAt,
+                        emuUpdateChecking = emuUpdateChecking,
                         sessionRunning = SessionState.running,
                         battleNetInstalled = battleNetInstalled,
                         backActionsInverted = backActionsInverted,
@@ -1482,13 +1515,44 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
                                 .putExtra(SessionService.EXTRA_PROGRAM, com.droiddeck.launcher.runtime.FlatpakManager.LAUNCHER)
                                 .putExtra(SessionService.EXTRA_PROGRAM_ARGS, arrayOf(id)))
                         },
-                        onRom = { g ->
-                            val e = emulatorList.first { it.id == g.emulatorId }
-                            if (!SessionPrefs.soundtracksIngame(this)) com.droiddeck.launcher.playback.SoundtrackController.pause(this)
-                            startActivity(Intent(this, SessionActivity::class.java)
-                                .putExtra(SessionService.EXTRA_MODE, SessionService.MODE_RUN)
-                                .putExtra(SessionService.EXTRA_PROGRAM, e.program)
-                                .putExtra(SessionService.EXTRA_PROGRAM_ARGS, Library.launchArgs(e.id, g.guestPath).toTypedArray()))
+                        onRom = { g, runner -> startRom(g, runner) },
+                        onEmuUpdate = { e, g, choice ->
+                            when (choice) {
+                                com.droiddeck.launcher.ui.EmuUpdateChoice.UPDATE -> androidEmus.get(e)
+                                com.droiddeck.launcher.ui.EmuUpdateChoice.SKIP -> {
+                                    androidEmus.skipUpdate(e)
+                                    emuUpdates = emuUpdates - e.id
+                                    emuUpdateAsk = emuUpdateAsk - e.id
+                                    startRom(g, Library.Runner.ANDROID)
+                                }
+                                com.droiddeck.launcher.ui.EmuUpdateChoice.LATER -> {
+                                    androidEmus.postponeUpdate(e)
+                                    emuUpdateAsk = emuUpdateAsk - e.id
+                                    startRom(g, Library.Runner.ANDROID)
+                                }
+                            }
+                        },
+                        onEmuUpdateInterval = { interval ->
+                            SessionPrefs.setEmuUpdateInterval(this, interval)
+                            emuUpdateInterval = interval
+                        },
+                        onCheckEmuUpdates = { checkEmuUpdates(manual = true) },
+                        onEmulatorRunner = { id, runner ->
+                            SessionPrefs.setEmuRunner(this, id, runner.name)
+                            emuRunners = emuRunners + (id to runner.name)
+                        },
+                        onAndroidEmulator = { e -> androidEmus.open(e) },
+                        onGetAndroidEmulator = { e -> androidEmus.get(e) },
+                        onAndroidEmulatorStore = { e -> androidEmus.store(e) },
+                        onRemoveAndroidEmulator = { e -> androidEmus.remove(e) },
+                        onCancelAndroidEmulatorDownload = { androidEmus.cancel() },
+                        onAddRomsDir = {
+                            pickRomsDir.launch(InAppFilePicker.buildDirIntent(this, getString(R.string.main_pick_roms), romsDirs.lastOrNull()))
+                        },
+                        onRemoveRomsDir = { path ->
+                            SessionPrefs.setRomsDirs(this, SessionPrefs.romsDirs(this) - path)
+                            readRomsDirs()
+                            refreshEmulators()
                         },
                         onResume = { startActivity(Intent(this, SessionActivity::class.java)) },
                         onSteamSettings = { loadModeSettings(SessionService.MODE_STEAM) },
@@ -1538,7 +1602,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
                         onSaveExport = { sg, layout -> exportSaves(sg.name, layout) { GameSaves.game(this@FrontEndActivity, sg) } },
                         onPerformance = { refreshCores(); showComponents = false; showMapping = false; showPerformance = true },
                         performancePanel = { PerformanceHost(embedded = true) },
-                        onRoms = { showRoms = true },
+                        onRoms = { navRequest = com.droiddeck.launcher.ui.SETUP_ROMS },
                         onFiles = { startActivity(Intent(this, com.droiddeck.launcher.files.FileManagerActivity::class.java)) },
                         onBrowseFiles = { dir ->
                             startActivity(Intent(this, com.droiddeck.launcher.files.FileManagerActivity::class.java)
@@ -1757,6 +1821,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
                         },
                         onAppIconsChanged = { refreshAndroidApps() },
                         onAndroidApp = { app, displayId -> launchAndroidApp(app, displayId) },
+                        onExternalRom = { intent, name -> androidEmus.start(intent, name) },
                         onBackActionsInverted = { inverted ->
                             SessionPrefs.setBackActionsInverted(this, inverted)
                             backActionsInverted = inverted
@@ -1824,15 +1889,6 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
                     page = page,
                 )
                 }
-                if (showRoms) RomsDialog(
-                    path = romsDir,
-                    onChoose = {
-                        showRoms = false
-                        pickRomsDir.launch(InAppFilePicker.buildDirIntent(this, getString(R.string.main_pick_roms), romsDir))
-                    },
-                    onClear = { SessionPrefs.setRomsDir(this, ""); romsDir = null; showRoms = false },
-                    onDismiss = { showRoms = false },
-                )
                 showNonAdreno?.let { release ->
                     ConfirmDialog(
                         title = androidx.compose.ui.res.stringResource(R.string.main_non_adreno_title),
@@ -2152,6 +2208,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
         refreshPhantomStatus()
         syncLossless()
         updates.onResume()
+        androidEmus.onResume()
         drivers.checkOnOpen()
         resumeInterruptedPackages()
         protons.checkUpdates()
@@ -2250,6 +2307,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
         gameLaunchRequest.incrementAndGet()
         cancelCompatLaunch()
         updates.unregister()
+        androidEmus.unregister()
         runCatching { unregisterReceiver(shortcutsInstallStatus) }
         super.onDestroy()
     }
@@ -2375,7 +2433,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
         if (catalogLoading || catalog != null) return
         catalogLoading = true
         Thread({
-            val fetched = DesktopCatalog.fetch()
+            val fetched = DesktopCatalog.fetch()?.let { DesktopCatalog.withBundled(bundledDesktopEmulators, it) }
             ui.post {
                 catalog = fetched
                 catalogLoading = false
@@ -2525,7 +2583,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     }
 
     private fun refreshPackages() {
-        packageRows = catalog?.map { PackageRow(it.id, it.kind, it.notes) }
+        packageRows = (catalog ?: bundledDesktopEmulators).map { PackageRow(it.id, it.kind, it.notes) }
         desktopInstalled = DesktopCatalog.desktopInstalled(this)
         desktopPresent = DesktopCatalog.desktopPresent(this)
     }
@@ -2577,6 +2635,62 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
         return true
     }
 
+    private fun scanEmulators(fetch: Boolean): List<Library.Emulator> {
+        val apps = if (fetch && !OfflineMode.enabled(this)) AndroidEmulators.fetch(this) else AndroidEmulators.cached(this)
+        val iconPx = (96 * resources.displayMetrics.density).toInt()
+        return Library.emulators(
+            this, { id -> DesktopCatalog.installed(this, id) != null }, apps,
+            androidInstalled = { pkg -> AndroidEmulators.installed(this, pkg) },
+            androidIcon = { pkg -> runCatching { packageManager.getApplicationIcon(pkg).toBitmap(iconPx, iconPx) }.getOrNull() },
+        )
+    }
+
+    private fun publishEmulators(emus: List<Library.Emulator>) {
+        emulatorList = emus
+        readRomsDirs()
+        emuRunners = emus.mapNotNull { e -> SessionPrefs.emuRunner(this, e.id)?.let { e.id to it } }.toMap()
+        val updates = emus.mapNotNull { e ->
+            val app = e.android?.takeIf { e.androidInstalled } ?: return@mapNotNull null
+            AndroidEmulatorUpdates.available(this, app)?.let { e.id to (app to it) }
+        }.toMap()
+        emuUpdates = updates.mapValues { it.value.second }
+        emuUpdateAsk = updates.filterValues { (app, _) -> AndroidEmulatorUpdates.asks(this, app) }.keys
+        emuUpdateCheckedAt = AndroidEmulatorUpdates.checkedAt(this)
+        emuUpdateInterval = SessionPrefs.emuUpdateInterval(this)
+    }
+
+    private fun checkEmuUpdates(manual: Boolean) {
+        if (emuUpdateChecking || OfflineMode.enabled(this)) return
+        emuUpdateChecking = true
+        Thread({
+            runCatching {
+                val apps = AndroidEmulators.fetch(this, force = manual)
+                AndroidEmulatorUpdates.check(this, apps) { com.droiddeck.launcher.core.Downloader.downloadString(it) }
+            }
+            val emus = scanEmulators(fetch = false)
+            ui.post { emuUpdateChecking = false; publishEmulators(emus) }
+        }, "emulator-updates").start()
+    }
+
+    private fun startRom(g: Library.Rom, runner: Library.Runner) {
+        val e = emulatorList.firstOrNull { it.id == g.emulatorId } ?: return
+        if (runner !in e.runners(g)) return
+        if (!SessionPrefs.soundtracksIngame(this)) com.droiddeck.launcher.playback.SoundtrackController.pause(this)
+        if (runner == Library.Runner.ANDROID) androidEmus.launch(e, g)
+        else startActivity(Intent(this, SessionActivity::class.java)
+            .putExtra(SessionService.EXTRA_MODE, SessionService.MODE_RUN)
+            .putExtra(SessionService.EXTRA_PROGRAM, e.program)
+            .putExtra(SessionService.EXTRA_PROGRAM_ARGS, Library.launchArgs(e.id, g.guestPath).toTypedArray()))
+    }
+
+    private fun refreshEmulators() {
+        val scan = ++emulatorScan
+        Thread({
+            val emus = scanEmulators(fetch = false)
+            ui.post { if (scan == emulatorScan) publishEmulators(emus) }
+        }, "emulators").start()
+    }
+
     private fun launchProgram(path: String) {
         startActivity(Intent(this, SessionActivity::class.java)
             .putExtra(SessionService.EXTRA_MODE, SessionService.MODE_RUN)
@@ -2605,7 +2719,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     }
 
     private fun installPackage(id: String) {
-        val entry = catalog?.firstOrNull { it.id == id } ?: return
+        val entry = (catalog ?: bundledDesktopEmulators).firstOrNull { it.id == id } ?: return
         if (busy || LinuxRuntimeInstaller.isBusy() || pkgStage != null || SessionState.running) return
         pkgId = id; pkgStage = getString(R.string.store_starting); pkgPercent = -1
         Thread({
@@ -2622,7 +2736,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
     }
 
     private fun removePackage(id: String) {
-        val entry = catalog?.firstOrNull { it.id == id } ?: return
+        val entry = (catalog ?: bundledDesktopEmulators).firstOrNull { it.id == id } ?: return
         if (busy || LinuxRuntimeInstaller.isBusy() || pkgStage != null || SessionState.running) return
         pkgId = id; pkgStage = getString(if (entry.kind == "appimage") R.string.main_removing_named else R.string.main_forgetting_named, entry.name); pkgPercent = -1
         Thread({
@@ -3205,7 +3319,7 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
         removalPending = LinuxRuntimeInstaller.hasRemovalPending(this)
         ui.post { autoUpdateRuntime() }
         frameGenLabel = FrameGen.label(this)
-        romsDir = SessionPrefs.romsDir(this).takeIf { it.isNotEmpty() }
+        readRomsDirs()
         logsEnabled = SessionPrefs.logsEnabled(this)
         enhancedDiagnosticsArmed = com.droiddeck.launcher.session.EnhancedDiagnostics.isArmed(this)
         gameDebugLogsEnabled = SessionPrefs.gameDebugLogsEnabled(this)
@@ -3234,8 +3348,11 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
             Thread({ com.droiddeck.launcher.session.FexCatalog.refresh(this) }, "fex-catalog").start()
         }
         Thread({
-            val emus = Library.emulators(this) { id -> DesktopCatalog.installed(this, id) != null }
-            ui.post { if (scanGeneration == libraryScanGeneration) emulatorList = emus }
+            val emus = scanEmulators(fetch = true)
+            ui.post {
+                if (scanGeneration == libraryScanGeneration) publishEmulators(emus)
+                if (AndroidEmulatorUpdates.due(this)) checkEmuUpdates(manual = false)
+            }
             if (ready) {
                 val quick = runCatching { Library.steamGames(this) }.getOrNull()
                 val claimed = quick?.let { runCatching { Library.claimedFolders(it) }.getOrDefault(emptySet()) }.orEmpty()
@@ -3304,8 +3421,8 @@ class FrontEndActivity : ComponentActivity(), com.droiddeck.launcher.ui.AgentPet
                 }
             }
             if (!OfflineMode.enabled(this) && CoverArt.fetchMissing(this, emus.flatMap { it.games })) {
-                val refreshed = Library.emulators(this) { id -> DesktopCatalog.installed(this, id) != null }
-                ui.post { emulatorList = refreshed }
+                val refreshed = scanEmulators(fetch = false)
+                ui.post { publishEmulators(refreshed) }
             }
         }, "library").start()
     }

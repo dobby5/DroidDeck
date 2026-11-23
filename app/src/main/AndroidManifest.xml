@@ -230,16 +230,16 @@
         <activity
             android:name=".files.FileManagerActivity"
             android:exported="false"
-            android:screenOrientation="user"
+            android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density"
-            android:theme="@style/AppTheme" />
+            android:theme="@style/ExplorerTheme" />
 
         <activity
             android:name=".files.FilePickerActivity"
             android:exported="false"
-            android:screenOrientation="user"
+            android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density"
-            android:theme="@style/AppTheme" />
+            android:theme="@style/ExplorerTheme" />
 
         <activity android:name=".stores.xbox.XboxLoginActivity" android:exported="false"
             android:process=":xboxlogin" android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density"
@@ -380,6 +380,25 @@
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/log_share_paths" />
+        </provider>
+        <provider
+            android:name=".frontend.RomFileProvider"
+            android:authorities="${applicationId}.roms"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/rom_share_paths" />
+        </provider>
+        <provider
+            android:name=".frontend.RomDocumentProvider"
+            android:authorities="${applicationId}.romdocuments"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
         </provider>
         <provider
             android:name=".files.AppFilesProvider"

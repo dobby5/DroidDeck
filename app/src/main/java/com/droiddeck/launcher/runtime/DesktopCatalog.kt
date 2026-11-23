@@ -23,28 +23,40 @@ object DesktopCatalog {
         val icon: String, val category: String,
     )
 
+    /** Every emulator package; the remote catalog adds the desktop itself. */
+    fun bundledEmulators(context: Context): List<Entry> =
+        runCatching { context.assets.open("desktop-emulators.json").bufferedReader().use { parse(it.readText()) } }
+            .onFailure { Log.w(TAG, "bundled emulators: $it") }.getOrNull().orEmpty()
+
+    /** The bundled emulators win over the remote catalog's entries with the same id. */
+    fun withBundled(bundled: List<Entry>, remote: List<Entry>): List<Entry> = (bundled + remote).distinctBy { it.id }
+
     fun fetch(url: String = CATALOG_URL, cancelled: java.util.function.BooleanSupplier? = null): List<Entry>? {
         val body = Downloader.downloadString(url, cancelled) ?: return null
         return try {
-            val json = JSONObject(body)
-            val arr = json.getJSONArray("packages")
-            val pageSize = try {
-                android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE).toString()
-            } catch (e: Exception) { "4096" }
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                val file = o.optJSONObject("pages")?.optJSONObject(pageSize) ?: o
-                Entry(
-                    o.getString("id"), o.getString("name"), o.optInt("tier", 1), o.optString("version", ""),
-                    o.optString("kind", "tar"), file.getString("url"), file.optString("sha256", ""),
-                    file.optLong("size", 0L), o.optString("notes", ""),
-                    o.optString("icon", "applications-games"), o.optString("category", "Game"),
-                )
-            }
+            parse(body)
         } catch (e: Exception) {
             Log.w(TAG, "catalog: $e"); null
         }
     }
+
+    internal fun parse(body: String, pageSize: String = pageSize()): List<Entry> {
+        val arr = JSONObject(body).getJSONArray("packages")
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            val file = o.optJSONObject("pages")?.optJSONObject(pageSize) ?: o
+            Entry(
+                o.getString("id"), o.getString("name"), o.optInt("tier", 1), o.optString("version", ""),
+                o.optString("kind", "tar"), file.getString("url"), file.optString("sha256", ""),
+                file.optLong("size", 0L), o.optString("notes", ""),
+                o.optString("icon", "applications-games"), o.optString("category", "Game"),
+            )
+        }
+    }
+
+    private fun pageSize(): String = try {
+        android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE).toString()
+    } catch (e: Exception) { "4096" }
 
     private fun marker(context: Context, id: String) = File(LinuxRuntime.rootDir(context), ".droiddeck-pkg-$id")
 

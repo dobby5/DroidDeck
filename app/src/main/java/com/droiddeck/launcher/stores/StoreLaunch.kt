@@ -55,15 +55,17 @@ object StoreLaunch {
             lines += "if defined $PARENT_VAR if not exist \"$EPIC_PARENT\" set \"$PARENT_VAR=\""
             lines += "if defined $PARENT_VAR set $PARENT_VAR=\"$EPIC_PARENT\""
             val game = "%$PARENT_VAR% $run"
+            lines += "set \"$LOCALE_VAR=\""
+            lines += "if defined DD_EPIC_LOCALE set \"$LOCALE_VAR=-epiclocale=%DD_EPIC_LOCALE%\""
             lines += "if exist \"%~dp0$EPIC_ARGS\" goto client"
             lines += "set \"$CODE_VAR=\""
             lines += "if exist \"%~dp0$EPIC_CODE\" set /p $CODE_VAR=<\"%~dp0$EPIC_CODE\""
             lines += "if exist \"%~dp0$EPIC_CODE\" del \"%~dp0$EPIC_CODE\""
             lines += "if defined $CODE_VAR goto signed"
-            lines += "$game %*"
+            lines += "$game %$LOCALE_VAR% %*"
             lines += "goto :eof"
             lines += ":signed"
-            lines += "set \"$CODE_VAR=\" & $game -AUTH_LOGIN=unused -AUTH_PASSWORD=%$CODE_VAR% -AUTH_TYPE=exchangecode %*"
+            lines += "set \"$CODE_VAR=\" & $game -AUTH_LOGIN=unused -AUTH_PASSWORD=%$CODE_VAR% -AUTH_TYPE=exchangecode %$LOCALE_VAR% %*"
             lines += "goto :eof"
             lines += ":client"
             lines += "set \"$CLIENT_VAR=\""
@@ -124,6 +126,7 @@ object StoreLaunch {
     private const val CODE_VAR = "DD_X"
     private const val CLIENT_VAR = "DD_A"
     private const val PARENT_VAR = "DD_P"
+    private const val LOCALE_VAR = "DD_L"
 
     fun installedGame(context: Context, store: Store, id: String): Library.SteamGame? {
         val folder = StoreInstallRoot.gameFolders(context).firstOrNull { folder ->

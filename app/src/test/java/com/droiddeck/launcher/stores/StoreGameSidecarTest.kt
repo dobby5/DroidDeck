@@ -117,9 +117,10 @@ class StoreGameSidecarTest {
         val text = StoreLaunch.launcherText(sample.copy(exe = "Binaries/Win64/Celeste.exe"))
         assertTrue(text.contains("cd /d \"%~dp0Binaries\\Win64\"\r\n"))
         assertTrue(text.contains("set \"FOO=bar\"\r\n"))
-        assertTrue(text.contains("\r\n%DD_P% \"%~dp0Binaries\\Win64\\Celeste.exe\" -EpicPortal -epicusername=\"Some One\" %*\r\n"))
+        assertTrue(text.contains("\r\n%DD_P% \"%~dp0Binaries\\Win64\\Celeste.exe\" -EpicPortal -epicusername=\"Some One\" %DD_L% %*\r\n"))
+        assertTrue(text.contains("if defined DD_EPIC_LOCALE set \"DD_L=-epiclocale=%DD_EPIC_LOCALE%\"\r\n"))
         assertTrue(text.contains("set /p DD_X=<\"%~dp0.droiddeck-epic-code\""))
-        assertTrue(text.contains("set \"DD_X=\" & %DD_P% \"%~dp0Binaries\\Win64\\Celeste.exe\" -EpicPortal -epicusername=\"Some One\" -AUTH_LOGIN=unused -AUTH_PASSWORD=%DD_X% -AUTH_TYPE=exchangecode %*\r\n"))
+        assertTrue(text.contains("set \"DD_X=\" & %DD_P% \"%~dp0Binaries\\Win64\\Celeste.exe\" -EpicPortal -epicusername=\"Some One\" -AUTH_LOGIN=unused -AUTH_PASSWORD=%DD_X% -AUTH_TYPE=exchangecode %DD_L% %*\r\n"))
         assertFalse(text.contains("AUTH="))
         assertFalse(text.contains("DD_AUTH"))
     }
@@ -178,7 +179,14 @@ class StoreGameSidecarTest {
             val on = lines.indexOf("set \"DD_P=1\"")
             assertTrue(id, on > lines.indexOf("cd /d \"%~dp0\""))
             assertEquals(parentLines, lines.subList(on + 1, on + 6))
-            assertEquals("if exist \"%~dp0.droiddeck-epic-args\" goto client", lines[on + 6])
+            assertEquals(
+                listOf(
+                    "set \"DD_L=\"",
+                    "if defined DD_EPIC_LOCALE set \"DD_L=-epiclocale=%DD_EPIC_LOCALE%\"",
+                    "if exist \"%~dp0.droiddeck-epic-args\" goto client",
+                ),
+                lines.subList(on + 6, on + 9),
+            )
             assertEquals(3, lines.count { it.contains("%DD_P% \"%~dp0PlayGTAV.exe\"") })
         }
     }

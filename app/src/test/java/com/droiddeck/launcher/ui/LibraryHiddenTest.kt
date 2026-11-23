@@ -37,7 +37,7 @@ class LibraryHiddenTest {
     }
 
     @Test fun theHiddenTabSortsLastUnlessMoved() {
-        assertEquals(listOf(LIBRARY_FAVORITES, Library.SOURCE_STEAM, "epic", Library.ADDED, LIBRARY_HIDDEN), placeLibraryTabs(listOf("epic"), DEFAULT_LIBRARY_PLACES))
+        assertEquals(listOf(LIBRARY_FAVORITES, Library.SOURCE_STEAM, "epic", Library.ADDED, Library.SOURCE_EMULATORS, LIBRARY_HIDDEN), placeLibraryTabs(listOf("epic"), DEFAULT_LIBRARY_PLACES))
         val moved = placeLibraryTabs(listOf("epic"), listOf(LIBRARY_HIDDEN to "epic"))
         assertEquals(listOf("epic", LIBRARY_HIDDEN), moved.filter { it == "epic" || it == LIBRARY_HIDDEN })
     }

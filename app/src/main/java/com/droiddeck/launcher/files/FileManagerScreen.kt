@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import com.droiddeck.launcher.ui.lazyGridItem
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -100,6 +101,22 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import com.droiddeck.launcher.ui.glass
+import com.droiddeck.launcher.ui.PrimaryButton
+import com.droiddeck.launcher.ui.SecondaryButton
+import androidx.compose.foundation.layout.Arrangement
 import java.io.File
 import java.util.Date
 
@@ -124,6 +141,11 @@ fun FileManagerScreen(
     pickerTitle: String? = null,
     onPick: ((File) -> Unit)? = null,
     onExit: (() -> Unit)? = null,
+    places: List<ExplorerPlace> = emptyList(),
+    browsable: (File) -> Boolean = { true },
+    pickAllowed: (File) -> Boolean = { true },
+    suggestedFolderName: String? = null,
+    onAddAll: ((File, Boolean) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -146,6 +168,7 @@ fun FileManagerScreen(
     var currentDir by remember { mutableStateOf(rootDir) }
     val initialRoot = remember(rootDir) {
         val abs = rootDir.absolutePath
+        places.filter { isWithin(rootDir, it.dir) }.maxByOrNull { it.dir.absolutePath.length }?.let { return@remember it.dir }
         val internal = "/storage/emulated/0"
         val vol = when {
             abs == internal || abs.startsWith("$internal/") -> File(internal)
@@ -187,8 +210,8 @@ fun FileManagerScreen(
     var showHidden by remember { mutableStateOf(browsePrefs.getBoolean("fmShowHidden", true)) }
     var showSortMenu by remember { mutableStateOf(false) }
     var gridView by remember { mutableStateOf(browsePrefs.getBoolean("fmGridView", true)) }
-    val showGrid = gridView
-    var compactRows by remember { mutableStateOf(browsePrefs.getBoolean("fmCompactRows", false)) }
+    var itemSize by remember { mutableIntStateOf(browsePrefs.getInt("fmItemSize", 1)) }
+    var counts by remember { mutableStateOf<Map<String, FolderCounts>>(emptyMap()) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<File?>(null) }
     var propertiesTarget by remember { mutableStateOf<File?>(null) }
@@ -197,16 +220,21 @@ fun FileManagerScreen(
     var operationDeterminate by remember { mutableStateOf(false) }
     var operationProgress by remember { mutableFloatStateOf(0f) }
     val listState = rememberLazyListState()
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val pullState = rememberPullToRefreshState()
 
-    var showFavorites by remember { mutableStateOf(false) }
     var favTick by remember { mutableIntStateOf(0) }
 
     var listingJob by remember { mutableStateOf<Job?>(null) }
+    val firstItem = remember { FocusRequester() }
+    val chooseFocus = remember { FocusRequester() }
+    val upFocus = remember { FocusRequester() }
+    val itemFocus = remember { HashMap<String, FocusRequester>() }
     val history = remember { mutableStateListOf<Pair<File, File>>() }
     var shownRoot by remember { mutableStateOf(initialRoot) }
 
-    fun loadDirectory(dir: File, resetScroll: Boolean = true, record: Boolean = true) {
+    /** [land] moves the focus once the listing is in: to that entry's path, or to the first entry when blank. */
+    fun loadDirectory(dir: File, resetScroll: Boolean = true, record: Boolean = true, land: String? = null) {
         if (cancellingNavigation) return
         if (record && dir != currentDir) {
             history.add(currentDir to shownRoot)
@@ -220,12 +248,30 @@ fun FileManagerScreen(
             val list = withContext(Dispatchers.IO) {
                 dir.listFiles()?.toList()
                     ?.filter { if (pickDirMode) it.isDirectory else !pickMode || it.isDirectory || matchesPickExt(it) }
-                    ?.filter { showHidden || !it.name.startsWith(".") }
+                    ?.filter { (showHidden || !it.name.startsWith(".")) && browsable(it) }
                     ?.sortedWith(comparatorFor(sortBy, sortDesc)) ?: emptyList()
             }
             if (currentDir != dir) return@launch
             entries = list
-            if (resetScroll) listState.scrollToItem(0)
+            if (land != null) {
+                val index = list.indexOfFirst { it.absolutePath == land }.coerceAtLeast(0)
+                repeat(2) { androidx.compose.runtime.withFrameNanos { } }
+                if (index > 0) { if (gridView) gridState.scrollToItem(index) else listState.scrollToItem(index) }
+                else if (resetScroll) { if (gridView) gridState.scrollToItem(0) else listState.scrollToItem(0) }
+                val target = list.getOrNull(index)?.absolutePath
+                com.droiddeck.launcher.ui.focusSoon {
+                    when {
+                        target != null -> itemFocus[target] ?: FocusRequester.Default
+                        pickDirMode && dir.canRead() && pickAllowed(dir) -> chooseFocus
+                        else -> upFocus
+                    }
+                }
+            }
+            val hidden = showHidden
+            counts = withContext(Dispatchers.IO) {
+                list.filter { it.isDirectory }.take(400).associate { it.absolutePath to countFolder(it, hidden, ::isGameFile) }
+            }
+            if (resetScroll && land == null) { if (gridView) gridState.scrollToItem(0) else listState.scrollToItem(0) }
         }
     }
 
@@ -238,6 +284,7 @@ fun FileManagerScreen(
 
     fun openDrive(dir: File) {
         if (cancellingNavigation) return
+        if (!dir.exists()) dir.mkdirs()
         currentRoot = dir
         loadDirectory(dir)
     }
@@ -249,7 +296,6 @@ fun FileManagerScreen(
             Toast.makeText(context, R.string.fm_start_unavailable, Toast.LENGTH_SHORT).show()
             return
         }
-        showFavorites = false
         showSearch = false
         searchQuery = ""
         currentRoot = initialRoot
@@ -268,22 +314,20 @@ fun FileManagerScreen(
             FileManagerNavigation.EXIT -> onExit?.invoke()
             FileManagerNavigation.RETURN_TO_START -> returnToStart()
             FileManagerNavigation.BACK -> {
-                if (showFavorites) showFavorites = false
-                else {
+                run {
                     while (history.isNotEmpty() && !history.last().first.isDirectory) history.removeAt(history.lastIndex)
                     val previous = history.lastOrNull()
                     if (previous != null && backExitsAtRootHop(currentDir, currentRoot, previous)) onExit?.invoke()
                     else if (previous != null) {
                         history.removeLastOrNull()
                         currentRoot = previous.second
-                        loadDirectory(previous.first, record = false)
-                    } else if (canNavigateUp(currentDir, currentRoot)) currentDir.parentFile?.let { loadDirectory(it, record = false) }
+                        loadDirectory(previous.first, record = false, land = currentDir.absolutePath)
+                    } else if (canNavigateUp(currentDir, currentRoot)) currentDir.parentFile?.let { loadDirectory(it, record = false, land = currentDir.absolutePath) }
                     else onExit?.invoke()
                 }
             }
             FileManagerNavigation.UP -> {
-                if (showFavorites) showFavorites = false
-                else if (canNavigateUp(currentDir, currentRoot)) currentDir.parentFile?.let { loadDirectory(it) }
+                if (canNavigateUp(currentDir, currentRoot)) currentDir.parentFile?.let { loadDirectory(it, land = currentDir.absolutePath) }
                 else onExit?.invoke()
             }
         }
@@ -294,7 +338,7 @@ fun FileManagerScreen(
         if (isOperationActive()) pendingNavigation = action else navigate(action)
     }
 
-    BackHandler(enabled = operationActive || cancellingNavigation || showFavorites || currentDir != currentRoot || history.isNotEmpty()) {
+    BackHandler(enabled = operationActive || cancellingNavigation || currentDir != currentRoot || history.isNotEmpty() || onExit != null) {
         requestNavigation(FileManagerNavigation.BACK)
     }
 
@@ -491,7 +535,6 @@ fun FileManagerScreen(
         }
     }
 
-    var showDriveMenu by remember { mutableStateOf(false) }
     var storageTick by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -527,7 +570,7 @@ fun FileManagerScreen(
 
 
     if (showNewFolderDialog) {
-        var folderName by remember { mutableStateOf("") }
+        var folderName by remember { mutableStateOf(suggestedFolderName.orEmpty()) }
         OutlinedAlertDialog(
             onDismissRequest = { showNewFolderDialog = false },
             title = { Text(stringResource(R.string.fm_new_folder)) },
@@ -694,625 +737,336 @@ fun FileManagerScreen(
         )
     }
 
-    val compactToolbar = LocalConfiguration.current.screenWidthDp < 600
-    Column(modifier = Modifier.fillMaxSize()) {
-        if (pickMode && !pickerTitle.isNullOrEmpty()) {
-            Text(
-                text = pickerTitle,
-                color = MaterialTheme.colorScheme.onBackground,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainer)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+    val narrow = LocalConfiguration.current.screenWidthDp < 700
+    val pal = com.droiddeck.launcher.ui.LocalPalette.current
+    val colors = MaterialTheme.colorScheme
+    val size = ExplorerSize.steps[itemSize.coerceIn(0, ExplorerSize.steps.lastIndex)]
+    val isGame: (File) -> Boolean = { if (lowerExts.isNotEmpty()) matchesPickExt(it) else isGameFile(it) }
+
+    fun toggleFavorite(file: File) {
+        val now = FavoritesStore.toggle(context, file.absolutePath)
+        favTick++
+        Toast.makeText(context, context.getString(if (now) R.string.fm_favorite_added else R.string.fm_favorite_removed, file.name), Toast.LENGTH_SHORT).show()
+    }
+
+    fun toggleSelected(file: File) {
+        selectedPaths = if (file.absolutePath in selectedPaths) selectedPaths - file.absolutePath else selectedPaths + file.absolutePath
+    }
+
+    fun open(file: File) {
+        when {
+            selectionMode -> toggleSelected(file)
+            file.isDirectory -> loadDirectory(file, land = "")
+            pickMode && !pickDirMode && matchesPickExt(file) -> {
+                pickPrefs.edit().putString("lastFilePickerDir", currentDir.absolutePath).apply()
+                onPick?.invoke(file)
+            }
+        }
+    }
+
+    val internalDir = File("/storage/emulated/0")
+    val usage = remember(storageTick, drives) { (listOf(internalDir) + drives.map { it.dir }).associate { it.absolutePath to volumeUsage(it) } }
+    fun here(dir: File) = currentRoot.absolutePath == dir.absolutePath
+    val storageItems = buildList {
+        add(SideItem(stringResource(R.string.fm_drive_internal), Icons.Filled.Smartphone, here(internalDir), internalDir, usage[internalDir.absolutePath]) { openDrive(internalDir) })
+        drives.filter { it.removable }.forEach { d ->
+            add(SideItem(d.label, Icons.Filled.SdStorage, here(d.dir), d.dir, usage[d.dir.absolutePath]) { if (d.readable) openDrive(d.dir) else unreadable(d) })
+        }
+        linuxRoot?.let { add(SideItem(stringResource(R.string.fm_drive_linux), Icons.Filled.Terminal, here(it), it) { openDrive(it) }) }
+    }
+    val quickItems = buildList {
+        places.forEach { pl -> add(SideItem(pl.label, pl.icon, here(pl.dir), pl.dir) { openDrive(pl.dir) }) }
+        File("/storage/emulated/0/Download").takeIf { it.isDirectory }?.let { add(SideItem(stringResource(R.string.fm_rail_downloads), Icons.Filled.Download, here(it), it) { openDrive(it) }) }
+        SessionPrefs.romsDirs(context).map(::File).filter { it.isDirectory }.forEach { d ->
+            add(SideItem(if (SessionPrefs.romsDirs(context).size > 1) "${stringResource(R.string.fm_rail_roms)} · ${d.name}" else stringResource(R.string.fm_rail_roms), Icons.Filled.SportsEsports, here(d), d) { openDrive(d) })
+        }
+        com.droiddeck.launcher.runtime.LinuxRuntime.logDir(context).takeIf { it.isDirectory }?.let { add(SideItem(stringResource(R.string.fm_rail_session_logs), Icons.Filled.Description, here(it), it) { openDrive(it) }) }
+        File("/storage/emulated/0/Pictures").takeIf { it.isDirectory }?.let { add(SideItem(stringResource(R.string.fm_rail_pictures), Icons.Filled.Image, here(it), it) { openDrive(it) }) }
+    }.distinctBy { it.dir?.absolutePath }
+    val favItems = remember(favTick) { FavoritesStore.list(context).map(::File).filter { it.exists() } }
+        .map { d -> SideItem(d.name, Icons.Filled.Star, here(d), d) { openDrive(d) } }
+    val sideItems = storageItems + quickItems + favItems
+    val rootLabel = sideItems.firstOrNull { it.dir?.absolutePath == currentRoot.absolutePath }?.label ?: currentRoot.name.ifEmpty { currentRoot.path }
+    val crumbs = remember(currentDir, currentRoot, rootLabel) {
+        val out = ArrayList<Pair<String, File>>()
+        var f: File? = currentDir
+        while (f != null) {
+            if (f.absolutePath == currentRoot.absolutePath) { out += rootLabel to f; break }
+            out += f.name.ifEmpty { f.path } to f
+            f = f.parentFile
+        }
+        out.reversed()
+    }
+    val hereName = crumbs.lastOrNull()?.first ?: currentDir.name
+    val title = pickerTitle ?: stringResource(R.string.fm_rail_title)
+
+    LaunchedEffect(Unit) { com.droiddeck.launcher.ui.focusWithinFrames({ false }) { if (pickDirMode) chooseFocus else firstItem } }
+
+    val itemMenu: @Composable (File) -> Unit = { file ->
+        if (showMenuFor == file) {
+            val isFav = remember(file.absolutePath, favTick) { FavoritesStore.isFavorite(context, file.absolutePath) }
+            FileActionMenu(
+                true, file, isFav, onDismiss = { showMenuFor = null },
+                onSelect = { selectionMode = true; selectedPaths = selectedPaths + file.absolutePath },
+                onProperties = { propertiesTarget = file }, onToggleFavorite = { toggleFavorite(file) },
+                onRename = { renameTarget = file },
+                onCopy = { clipboardFiles = listOf(file); isCutOperation = false },
+                onCut = { clipboardFiles = listOf(file); isCutOperation = true },
+                onDelete = { selectedEntry = file },
             )
         }
-        if (pickDirMode) {
-            Button(
-                onClick = { onPick?.invoke(currentDir) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp).focusGlide(CircleShape),
-            ) {
-                Icon(Icons.Filled.Folder, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.fm_select_this_folder))
-            }
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-        ) {
-            val upEnabled = canGoUp && !cancellingNavigation
-            IconButton(onClick = { requestNavigation(FileManagerNavigation.UP) }, enabled = upEnabled, modifier = Modifier.focusGlide(CircleShape)) {
-                Icon(
-                    Icons.Filled.ArrowBack,
-                    stringResource(R.string.fm_back),
-                    tint = if (upEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
-                )
-            }
+    }
+    @Composable
+    fun detailOf(file: File): String =
+        if (file.isDirectory) folderDetail(counts[file.absolutePath])
+        else com.droiddeck.launcher.stores.formatBytes(file.length())
 
-            val currentDriveLabel = stringResource(describeLocation(currentDir).driveLabel)
-            val driveChipAlpha = if (showFavorites) 0.45f else 1f
-            Box {
-                val driveChipShape = RoundedCornerShape(8.dp)
-                Text(
-                    text = "  $currentDriveLabel  ▾",
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = driveChipAlpha),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .clip(driveChipShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainer)
-                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), driveChipShape)
-                        .clickable { showDriveMenu = true }
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                )
-                DropdownMenu(
-                    expanded = showDriveMenu,
-                    onDismissRequest = { showDriveMenu = false },
-                    modifier = Modifier.outlinedMenuCard(),
+    Box(
+        Modifier.fillMaxSize().background(colors.background)
+            .background(Brush.verticalGradient(listOf(pal.signal.copy(alpha = 0.10f), colors.background.copy(alpha = 0f), colors.background))),
+    ) {
+        Row(Modifier.fillMaxSize().padding(horizontal = if (narrow) 16.dp else 32.dp, vertical = if (narrow) 14.dp else 24.dp)) {
+            if (!narrow) {
+                Column(
+                    Modifier.width(236.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(end = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    drives.forEachIndexed { i, drive ->
-                        if (i > 0) MenuItemDivider()
-                        DropdownMenuItem(
-                            text = { Text(drive.label) },
-                            leadingIcon = {
-                                Icon(
-                                    if (drive.removable) Icons.Filled.SdStorage else Icons.Filled.Storage,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            },
-                            onClick = {
-                                showDriveMenu = false
-                                if (drive.readable) {
-                                    openDrive(drive.dir)
-                                } else {
-                                    unreadable(drive)
-                                }
-                            },
-                            modifier = Modifier.focusGlide(),
-                        )
+                    com.droiddeck.launcher.ui.Eyebrow(title)
+                    SideHeading(stringResource(R.string.fp_storage))
+                    storageItems.forEach { SideEntry(it) }
+                    if (quickItems.isNotEmpty()) {
+                        SideHeading(stringResource(R.string.fm_quick_access))
+                        quickItems.forEach { SideEntry(it) }
                     }
-                    linuxRoot?.let { root ->
-                        MenuItemDivider()
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.fm_drive_linux)) },
-                            leadingIcon = {
-                                Icon(Icons.Filled.Terminal, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                            },
-                            onClick = { showDriveMenu = false; openDrive(root) },
-                            modifier = Modifier.focusGlide(),
-                        )
+                    if (favItems.isNotEmpty()) {
+                        SideHeading(stringResource(R.string.fm_favorites))
+                        favItems.forEach { SideEntry(it) }
                     }
                 }
             }
-
-            Spacer(Modifier.width(4.dp))
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .weight(1f)
-                    .then(if (compactToolbar) Modifier.horizontalScroll(rememberScrollState()) else Modifier),
-            ) {
-                if (showFavorites) {
-                    Text(
-                        text = stringResource(R.string.fm_favorites),
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = if (compactToolbar) Modifier.widthIn(max = 140.dp) else Modifier.weight(1f),
-                    )
-                } else if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) {
-                    if (!compactToolbar) Spacer(Modifier.weight(1f))
-                } else {
-                    Text(
-                        text = currentDir.name.ifBlank { currentDir.absolutePath },
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = if (compactToolbar) Modifier.widthIn(max = 140.dp) else Modifier.weight(1f),
-                    )
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                if (narrow) {
+                    com.droiddeck.launcher.ui.Eyebrow(title)
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        sideItems.forEach { PathPill(it.label, it.selected, it.icon, it.onClick) }
+                    }
                 }
-
-                if (launchDir != null) {
-                    IconButton(onClick = { requestNavigation(FileManagerNavigation.RETURN_TO_START) }, enabled = !cancellingNavigation, modifier = Modifier.focusGlide(CircleShape)) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardReturn, stringResource(R.string.fm_return_to_start), tint = MaterialTheme.colorScheme.primary)
-                    }
-                    if (LocalConfiguration.current.screenWidthDp >= 700) Spacer(Modifier.width(56.dp))
-                }
-
-                if (!showFavorites) {
-                    if (!pickMode) {
-                        OutlinedButton(
-                            onClick = { showNewFolderDialog = true },
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(32.dp).focusGlide(CircleShape),
-                        ) {
-                            Icon(Icons.Filled.CreateNewFolder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(5.dp))
-                            Text(stringResource(R.string.fm_new_folder), color = MaterialTheme.colorScheme.onBackground, fontSize = 12.sp)
-                        }
-                    }
-                    IconButton(onClick = { showSearch = !showSearch; if (!showSearch) searchQuery = "" }, modifier = Modifier.focusGlide(CircleShape)) {
-                        Icon(Icons.Filled.Search, stringResource(R.string.fm_search), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }, modifier = Modifier.focusGlide(CircleShape)) {
-                            Icon(Icons.Filled.Sort, stringResource(R.string.fm_sort), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                            listOf("name" to stringResource(R.string.fm_sort_name), "date" to stringResource(R.string.fm_sort_date), "size" to stringResource(R.string.fm_prop_size))
-                                .forEach { (key, label) ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(if (sortBy == key) "$label  ${if (sortDesc) "↓" else "↑"}" else label)
-                                        },
-                                        onClick = {
-                                            if (sortBy == key) sortDesc = !sortDesc else { sortBy = key; sortDesc = false }
-                                            browsePrefs.edit().putString("fmSortBy", sortBy)
-                                                .putBoolean("fmSortDesc", sortDesc).apply()
-                                            showSortMenu = false
-                                            loadDirectory(currentDir, resetScroll = false)
-                                        },
-                                        modifier = Modifier.focusGlide(),
-                                    )
+                val tools: @Composable () -> Unit = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ToolButton(Icons.Filled.CreateNewFolder, stringResource(R.string.fm_new_folder), enabled = currentDir.canWrite()) { showNewFolderDialog = true }
+                        val fav = remember(currentDir.absolutePath, favTick) { FavoritesStore.isFavorite(context, currentDir.absolutePath) }
+                        ToolButton(if (fav) Icons.Filled.Star else Icons.Filled.StarBorder, stringResource(if (fav) R.string.fm_favorite_remove else R.string.fm_favorite_add), active = fav) { toggleFavorite(currentDir) }
+                        ToolButton(Icons.Filled.Search, stringResource(R.string.fm_search), active = showSearch) { showSearch = !showSearch; if (!showSearch) searchQuery = "" }
+                        var viewMenu by remember { mutableStateOf(false) }
+                        Box {
+                            ToolButton(if (gridView) Icons.Filled.GridView else Icons.Filled.ViewAgenda, stringResource(R.string.fm_view), active = viewMenu) { viewMenu = true }
+                            com.droiddeck.launcher.ui.AnchoredMenu(viewMenu, onDismiss = { viewMenu = false }, title = stringResource(R.string.fm_view), compact = true, minWidth = 220.dp) { first ->
+                                listOf(true to R.string.fm_grid_view, false to R.string.fm_list_view).forEachIndexed { i, (grid, label) ->
+                                    com.droiddeck.launcher.ui.MenuItem(stringResource(label), checked = gridView == grid, focusRequester = if (i == 0) first else null) {
+                                        gridView = grid
+                                        browsePrefs.edit().putBoolean("fmGridView", gridView).apply()
+                                        viewMenu = false
+                                    }
                                 }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                            DropdownMenuItem(
-                                text = { Text(if (gridView) stringResource(R.string.fm_list_view) else stringResource(R.string.fm_grid_view)) },
-                                onClick = {
-                                    gridView = !gridView
-                                    browsePrefs.edit().putBoolean("fmGridView", gridView).apply()
-                                    showSortMenu = false
-                                },
-                                modifier = Modifier.focusGlide(),
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (compactRows) stringResource(R.string.fm_rows_comfortable) else stringResource(R.string.fm_rows_compact)) },
-                                onClick = {
-                                    compactRows = !compactRows
-                                    browsePrefs.edit().putBoolean("fmCompactRows", compactRows).apply()
-                                    showSortMenu = false
-                                },
-                                modifier = Modifier.focusGlide(),
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (showHidden) stringResource(R.string.fm_hide_hidden) else stringResource(R.string.fm_show_hidden)) },
-                                onClick = {
+                                listOf(R.string.fm_size_small, R.string.fm_size_medium, R.string.fm_size_large).forEachIndexed { i, label ->
+                                    com.droiddeck.launcher.ui.MenuItem(stringResource(label), checked = itemSize == i) {
+                                        itemSize = i
+                                        browsePrefs.edit().putInt("fmItemSize", itemSize).apply()
+                                        viewMenu = false
+                                    }
+                                }
+                            }
+                        }
+                        Box {
+                            ToolButton(Icons.Filled.Sort, stringResource(R.string.fm_sort), active = showSortMenu) { showSortMenu = true }
+                            com.droiddeck.launcher.ui.AnchoredMenu(showSortMenu, onDismiss = { showSortMenu = false }, title = stringResource(R.string.fm_sort), compact = true, minWidth = 240.dp) { first ->
+                                listOf("name" to R.string.fm_sort_name, "date" to R.string.fm_sort_date, "size" to R.string.fm_prop_size).forEachIndexed { i, (key, label) ->
+                                    com.droiddeck.launcher.ui.MenuItem(
+                                        stringResource(label) + if (sortBy == key) (if (sortDesc) "  ↓" else "  ↑") else "", checked = sortBy == key,
+                                        focusRequester = if (i == 0) first else null,
+                                    ) {
+                                        if (sortBy == key) sortDesc = !sortDesc else { sortBy = key; sortDesc = false }
+                                        browsePrefs.edit().putString("fmSortBy", sortBy).putBoolean("fmSortDesc", sortDesc).apply()
+                                        showSortMenu = false
+                                        loadDirectory(currentDir, resetScroll = false)
+                                    }
+                                }
+                                com.droiddeck.launcher.ui.MenuItem(stringResource(R.string.fm_show_hidden), checked = showHidden) {
                                     showHidden = !showHidden
                                     browsePrefs.edit().putBoolean("fmShowHidden", showHidden).apply()
                                     showSortMenu = false
                                     loadDirectory(currentDir, resetScroll = false)
-                                },
-                                modifier = Modifier.focusGlide(),
-                            )
+                                }
+                                com.droiddeck.launcher.ui.MenuItem(stringResource(R.string.fm_select), checked = selectionMode) {
+                                    selectionMode = !selectionMode
+                                    if (!selectionMode) selectedPaths = emptySet()
+                                    showSortMenu = false
+                                }
+                            }
                         }
                     }
                 }
-
-                IconButton(onClick = { showFavorites = !showFavorites }, modifier = Modifier.focusGlide(CircleShape)) {
-                    if (showFavorites) {
-                        Icon(Icons.Filled.Star, stringResource(R.string.fm_hide_favorites), tint = MaterialTheme.colorScheme.primary)
-                    } else {
-                        Icon(Icons.Filled.StarBorder, stringResource(R.string.fm_show_favorites), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-            if (!pickMode && onExit != null) {
-                IconButton(onClick = { requestNavigation(FileManagerNavigation.EXIT) }, enabled = !cancellingNavigation, modifier = Modifier.focusGlide(CircleShape)) {
-                    Icon(Icons.AutoMirrored.Filled.ExitToApp, stringResource(R.string.fm_exit), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-
-        if (showSearch && !showFavorites) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                singleLine = true,
-                placeholder = { Text(stringResource(R.string.fm_filter_folder), fontSize = 13.sp) },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).focusGlide(),
-            )
-        }
-
-        val freeSpace = remember(currentDir.absolutePath, entries) {
-            runCatching { currentDir.usableSpace }.getOrDefault(0L)
-        }
-        if (!showFavorites) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
-            ) {
+                if (narrow) Box(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp)) { tools() }
+                else Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) { tools() }
+                Breadcrumbs(crumbs, { loadDirectory(it) }, Modifier.fillMaxWidth().padding(top = 12.dp))
+                val folderCount = entries.count { it.isDirectory }
+                val gameCount = entries.count { it.isFile && isGame(it) }
+                val fileCount = entries.count { it.isFile }
+                val free = remember(currentDir.absolutePath, entries) { runCatching { currentDir.usableSpace }.getOrDefault(0L) }
                 Text(
-                    text = elidePathStart(currentDir.absolutePath, 52),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f),
+                    if (!currentDir.canRead()) stringResource(R.string.fp_unreadable)
+                    else listOfNotNull(
+                        stringResource(R.string.fp_folders, folderCount),
+                        stringResource(R.string.fp_games, gameCount).takeIf { gameCount > 0 },
+                        stringResource(R.string.fp_files, fileCount).takeIf { gameCount == 0 && fileCount > 0 },
+                        stringResource(R.string.fm_free_space, com.droiddeck.launcher.stores.formatBytes(free)).takeIf { free > 0 },
+                    ).joinToString(" · "),
+                    fontSize = 14.sp, color = if (currentDir.canRead()) colors.onSurfaceVariant else colors.error,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 12.dp),
                 )
-                if (freeSpace > 0) {
-                    Text(
-                        stringResource(R.string.fm_free_space, FileOps.formatBytes(context, freeSpace)),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                        maxLines = 1,
+                if (showSearch) {
+                    OutlinedTextField(
+                        value = searchQuery, onValueChange = { searchQuery = it }, singleLine = true,
+                        placeholder = { Text(stringResource(R.string.fm_filter_folder), fontSize = 13.sp) },
+                        leadingIcon = { Icon(Icons.Filled.Search, null) },
+                        shape = RoundedCornerShape(30.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).focusGlide(RoundedCornerShape(30.dp)),
                     )
                 }
-            }
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-
-        if (selectionMode) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-                    .then(if (compactToolbar) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Text(
-                    stringResource(R.string.fm_selected_count, selectedPaths.size),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    fontSize = 13.sp,
-                    modifier = if (compactToolbar) Modifier.padding(end = 12.dp) else Modifier.weight(1f),
-                )
-                val allVisibleSelected = visibleEntries.isNotEmpty() && visibleEntries.all { it.absolutePath in selectedPaths }
-                val anyVisibleSelected = visibleEntries.any { it.absolutePath in selectedPaths }
-                val selBarPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
-                OutlinedButton(
-                    onClick = {
+                val bar: @Composable (@Composable () -> Unit) -> Unit = { content ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).glass(RoundedCornerShape(30.dp)).padding(horizontal = 14.dp, vertical = 6.dp)
+                            .horizontalScroll(rememberScrollState()),
+                    ) { CompositionLocalProvider(com.droiddeck.launcher.ui.LocalPillButtons provides true) { content() } }
+                }
+                if (selectionMode) bar {
+                    Text(stringResource(R.string.fm_selected_count, selectedPaths.size), color = colors.onBackground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    val allSelected = visibleEntries.isNotEmpty() && visibleEntries.all { it.absolutePath in selectedPaths }
+                    val anySelected = visibleEntries.any { it.absolutePath in selectedPaths }
+                    SecondaryButton(stringResource(if (allSelected) R.string.fm_select_none else R.string.fm_select_all), compact = true) {
                         val shown = visibleEntries.map { it.absolutePath }
-                        selectedPaths = if (allVisibleSelected) selectedPaths - shown.toSet() else selectedPaths + shown
-                    },
-                    contentPadding = selBarPadding,
-                    modifier = Modifier.focusGlide(CircleShape),
-                ) { Text(if (allVisibleSelected) stringResource(R.string.fm_select_none) else stringResource(R.string.fm_select_all), fontSize = 12.sp) }
-                Spacer(Modifier.width(4.dp))
-                OutlinedButton(
-                    enabled = anyVisibleSelected,
-                    onClick = {
-                        clipboardFiles = visibleEntries.filter { it.absolutePath in selectedPaths }
-                        isCutOperation = false
-                        selectionMode = false
-                        selectedPaths = emptySet()
-                    },
-                    contentPadding = selBarPadding,
-                    modifier = Modifier.focusGlide(CircleShape),
-                ) { Text(stringResource(R.string.fm_copy), fontSize = 12.sp) }
-                Spacer(Modifier.width(4.dp))
-                OutlinedButton(
-                    enabled = anyVisibleSelected,
-                    onClick = {
-                        clipboardFiles = visibleEntries.filter { it.absolutePath in selectedPaths }
-                        isCutOperation = true
-                        selectionMode = false
-                        selectedPaths = emptySet()
-                    },
-                    contentPadding = selBarPadding,
-                    modifier = Modifier.focusGlide(CircleShape),
-                ) { Text(stringResource(R.string.fm_cut), fontSize = 12.sp) }
-                Spacer(Modifier.width(4.dp))
-                OutlinedButton(
-                    enabled = anyVisibleSelected,
-                    onClick = { pendingBulkDelete = visibleEntries.filter { it.absolutePath in selectedPaths } },
-                    contentPadding = selBarPadding,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                    modifier = Modifier.focusGlide(CircleShape),
-                ) { Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-                Spacer(Modifier.width(4.dp))
-                OutlinedButton(
-                    onClick = { selectionMode = false; selectedPaths = emptySet() },
-                    contentPadding = selBarPadding,
-                    modifier = Modifier.focusGlide(CircleShape),
-                ) { Text(stringResource(R.string.fm_done), fontSize = 12.sp) }
-            }
-        }
-
-        if (clipboardFiles.isNotEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
-                    .clickable(enabled = !isOperationRunning) { performPaste() }
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                Icon(Icons.Filled.ContentPaste, stringResource(R.string.fm_paste), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                val what = if (clipboardFiles.size == 1) clipboardFiles.first().name
-                else pluralStringResource(R.plurals.fm_items, clipboardFiles.size, clipboardFiles.size)
-                Text(
-                    if (isCutOperation) stringResource(R.string.fm_paste_move_here, what) else stringResource(R.string.fm_paste_here, what),
-                    color = MaterialTheme.colorScheme.onBackground, fontSize = 13.sp, modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = { clipboardFiles = emptyList(); isCutOperation = false }, modifier = Modifier.focusGlide(CircleShape)) {
-                    Text(stringResource(R.string.common_cancel), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        selectedPaths = if (allSelected) selectedPaths - shown.toSet() else selectedPaths + shown
+                    }
+                    SecondaryButton(stringResource(R.string.fm_copy), enabled = anySelected, compact = true) {
+                        clipboardFiles = visibleEntries.filter { it.absolutePath in selectedPaths }; isCutOperation = false
+                        selectionMode = false; selectedPaths = emptySet()
+                    }
+                    SecondaryButton(stringResource(R.string.fm_cut), enabled = anySelected, compact = true) {
+                        clipboardFiles = visibleEntries.filter { it.absolutePath in selectedPaths }; isCutOperation = true
+                        selectionMode = false; selectedPaths = emptySet()
+                    }
+                    SecondaryButton(stringResource(R.string.common_delete), enabled = anySelected, compact = true) {
+                        pendingBulkDelete = visibleEntries.filter { it.absolutePath in selectedPaths }
+                    }
+                    SecondaryButton(stringResource(R.string.fm_done), compact = true) { selectionMode = false; selectedPaths = emptySet() }
                 }
-            }
-        }
-
-        if (isOperationRunning) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainer)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                val pctText = if (operationDeterminate) "  ${(operationProgress * 100).toInt()}%" else ""
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                if (clipboardFiles.isNotEmpty()) bar {
+                    Icon(Icons.Filled.ContentPaste, null, tint = pal.signal, modifier = Modifier.size(18.dp))
+                    val what = if (clipboardFiles.size == 1) clipboardFiles.first().name
+                    else pluralStringResource(R.plurals.fm_items, clipboardFiles.size, clipboardFiles.size)
                     Text(
-                        "$operationLabel$pctText",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
+                        if (isCutOperation) stringResource(R.string.fm_paste_move_here, what) else stringResource(R.string.fm_paste_here, what),
+                        color = colors.onBackground, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
-                    if (operationJob != null) {
-                        TextButton(onClick = {
-                            cancelledJob = operationJob
-                            operationJob?.cancel()
-                            operationJob = null
-                            isOperationRunning = false
-                            operationDeterminate = false
-                            loadDirectory(currentDir, resetScroll = false)
-                        }, modifier = Modifier.focusGlide(CircleShape)) { Text(stringResource(R.string.common_cancel), fontSize = 12.sp) }
+                    PrimaryButton(stringResource(R.string.fm_paste), enabled = !isOperationRunning, compact = true) { performPaste() }
+                    SecondaryButton(stringResource(R.string.common_cancel), compact = true) { clipboardFiles = emptyList(); isCutOperation = false }
+                }
+                if (isOperationRunning) bar {
+                    Column(Modifier.width(360.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val pct = if (operationDeterminate) "  ${(operationProgress * 100).toInt()}%" else ""
+                        Text("$operationLabel$pct", color = colors.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (operationDeterminate) LinearProgressIndicator(progress = { operationProgress }, modifier = Modifier.fillMaxWidth().height(4.dp), color = pal.signal, trackColor = pal.line)
+                        else LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(4.dp), color = pal.signal, trackColor = pal.line)
+                    }
+                    if (operationJob != null) SecondaryButton(stringResource(R.string.common_cancel), compact = true) {
+                        cancelledJob = operationJob
+                        operationJob?.cancel()
+                        operationJob = null
+                        isOperationRunning = false
+                        operationDeterminate = false
+                        loadDirectory(currentDir, resetScroll = false)
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-                if (operationDeterminate) {
-                    LinearProgressIndicator(
-                        progress = { operationProgress },
-                        modifier = Modifier.fillMaxWidth().height(4.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.outline,
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().height(4.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.outline,
-                    )
-                }
-            }
-        }
-
-        val fmRailState = rememberRailState("filemanager")
-        fun locItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, dir: File, shortLabel: String? = null) =
-            RailItem(label, icon, !showFavorites && currentRoot.absolutePath == dir.absolutePath, shortLabel = shortLabel) {
-                showFavorites = false; openDrive(dir)
-            }
-        val storageItems = buildList {
-            add(locItem(stringResource(R.string.fm_drive_internal), Icons.Filled.Smartphone, File("/storage/emulated/0")))
-            drives.filter { it.removable }.forEach { d ->
-                add(RailItem(d.label, Icons.Filled.SdStorage, !showFavorites && currentRoot.absolutePath == d.dir.absolutePath) {
-                    showFavorites = false; if (d.readable) openDrive(d.dir) else unreadable(d)
-                })
-            }
-            linuxRoot?.let { add(locItem(stringResource(R.string.fm_drive_linux), Icons.Filled.Terminal, it)) }
-        }
-        val quickItems = buildList {
-            File("/storage/emulated/0/Download").takeIf { it.isDirectory }?.let { add(locItem(stringResource(R.string.fm_rail_downloads), Icons.Filled.Download, it, stringResource(R.string.fm_rail_downloads_short))) }
-            SessionPrefs.romsDir(context).takeIf { it.isNotEmpty() }?.let(::File)?.takeIf { it.isDirectory }
-                ?.let { add(locItem(stringResource(R.string.fm_rail_roms), Icons.Filled.SportsEsports, it)) }
-            com.droiddeck.launcher.runtime.LinuxRuntime.logDir(context).takeIf { it.isDirectory }?.let { add(locItem(stringResource(R.string.fm_rail_session_logs), Icons.Filled.Description, it)) }
-            File("/storage/emulated/0/Pictures").takeIf { it.isDirectory }?.let { add(locItem(stringResource(R.string.fm_rail_pictures), Icons.Filled.Image, it)) }
-        }
-        val favItems = remember(favTick) { FavoritesStore.list(context).map(::File).filter { it.exists() } }
-            .map { d -> RailItem(d.name, Icons.Filled.Star, false) { showFavorites = false; openDrive(d) } }
-        val locationSections = buildList {
-            add(RailSection(stringResource(R.string.fm_rail_storage), storageItems))
-            if (quickItems.isNotEmpty()) add(RailSection(stringResource(R.string.fm_rail_quick), quickItems))
-            if (favItems.isNotEmpty()) add(RailSection(stringResource(R.string.fm_rail_favorites), favItems))
-        }
-
-        Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            if (!pickMode) {
-                CollapsibleRail(state = fmRailState, title = stringResource(R.string.fm_rail_title), sections = locationSections, outlinedItems = true)
-            }
-            Box(modifier = Modifier.weight(1f).fillMaxSize()) {
-        if (showFavorites) {
-            FavoritesList(
-                currentDir = currentDir,
-                favTick = favTick,
-                onPinCurrent = {
-                    FavoritesStore.add(context, currentDir.absolutePath)
-                    favTick++
-                    Toast.makeText(context, context.getString(R.string.fm_favorite_added, currentDir.name), Toast.LENGTH_SHORT).show()
-                },
-                onJump = { dir ->
-                    showFavorites = false
-                    openDrive(dir)
-                },
-                onUnpin = { dir ->
-                    FavoritesStore.remove(context, dir.absolutePath)
-                    favTick++
-                    Toast.makeText(context, context.getString(R.string.fm_favorite_removed, dir.name), Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .nestedScroll(pullState.nestedScrollConnection),
-        ) {
-            val shownEntries = visibleEntries
-
-            if (showGrid && entries.isNotEmpty()) {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 104.dp),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(8.dp),
-                ) {
-                    if (canGoUp) item(key = "..", span = { GridItemSpan(maxLineSpan) }) {
-                        ParentFolderRow(compact = compactRows, onTap = { requestNavigation(FileManagerNavigation.UP) })
-                    }
-                    items(shownEntries, key = { it.absolutePath }) { file ->
-                        val isFav = remember(file.absolutePath, favTick) {
-                            FavoritesStore.isFavorite(context, file.absolutePath)
-                        }
-                        FileGridTile(
-                            file = file,
-                            selectionMode = selectionMode,
-                            selected = file.absolutePath in selectedPaths,
-                            onLongPress = {
-                                if (!pickMode) {
-                                    if (selectionMode) {
-                                        selectedPaths = if (file.absolutePath in selectedPaths)
-                                            selectedPaths - file.absolutePath
-                                        else selectedPaths + file.absolutePath
-                                    } else {
-                                        showMenuFor = file
-                                    }
-                                }
-                            },
-                            onToggleSelect = {
-                                selectedPaths = if (file.absolutePath in selectedPaths)
-                                    selectedPaths - file.absolutePath
-                                else selectedPaths + file.absolutePath
-                            },
-                            onTap = {
-                                if (file.isDirectory) loadDirectory(file)
-                                else if (pickMode) {
-                                    if (matchesPickExt(file)) {
-                                        pickPrefs.edit().putString("lastFilePickerDir", currentDir.absolutePath).apply()
-                                        onPick?.invoke(file)
-                                    }
-                                }
-                            },
-                            onMenu = { showMenuFor = file },
-                            menuExpanded = showMenuFor == file,
-                            onDismissMenu = { showMenuFor = null },
-                            isFavorite = isFav,
-                            onSelect = {
-                                selectionMode = true
-                                selectedPaths = selectedPaths + file.absolutePath
-                                showMenuFor = null
-                            },
-                            onRename = { renameTarget = file; showMenuFor = null },
-                            onCopy = { clipboardFiles = listOf(file); isCutOperation = false; showMenuFor = null },
-                            onCut = { clipboardFiles = listOf(file); isCutOperation = true; showMenuFor = null },
-                            onDelete = { selectedEntry = file; showMenuFor = null },
-                            onToggleFavorite = {
-                                val nowFav = FavoritesStore.toggle(context, file.absolutePath)
-                                favTick++
-                                showMenuFor = null
-                                Toast.makeText(
-                                    context,
-                                    if (nowFav) context.getString(R.string.fm_favorite_added, file.name)
-                                    else context.getString(R.string.fm_favorite_removed, file.name),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            },
-                            onProperties = { propertiesTarget = file; showMenuFor = null },
-                        )
-                    }
-                }
-            } else
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                if (canGoUp) item(key = "..") {
-                    ParentFolderRow(compact = compactRows, onTap = { requestNavigation(FileManagerNavigation.UP) })
-                }
-                if (entries.isEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier.fillParentMaxSize(),
-                            contentAlignment = Alignment.Center,
+                Box(Modifier.weight(1f).fillMaxWidth().nestedScroll(pullState.nestedScrollConnection)) {
+                    val shown = visibleEntries
+                    if (shown.isEmpty()) {
+                        Box(Modifier.fillMaxWidth()) { com.droiddeck.launcher.ui.Note(stringResource(R.string.fm_empty_directory)) }
+                    } else if (gridView) {
+                        val gridNav = com.droiddeck.launcher.ui.rememberLazyGridNav(gridState, 12.dp)
+                        LazyVerticalGrid(
+                            GridCells.Adaptive(size.gridMin), Modifier.fillMaxSize(), state = gridState,
+                            contentPadding = PaddingValues(bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Text(stringResource(R.string.fm_empty_directory), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            itemsIndexed(shown, key = { _, f -> f.absolutePath }) { i, file ->
+                                val own = remember { FocusRequester() }
+                                val req = if (i == 0) firstItem else own
+                                TrackFocus(itemFocus, file.absolutePath, req)
+                                ExplorerCard(
+                                    file, detailOf(file), size, file.absolutePath in selectedPaths, selectionMode, !file.canRead(),
+                                    null, onOpen = { open(file) }, onMenu = { showMenuFor = file },
+                                    modifier = Modifier.lazyGridItem(gridNav, i, shown.size, req),
+                                ) { itemMenu(file) }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            itemsIndexed(shown, key = { _, f -> f.absolutePath }) { i, file ->
+                                val own = remember { FocusRequester() }
+                                val req = if (i == 0) firstItem else own
+                                TrackFocus(itemFocus, file.absolutePath, req)
+                                val date = remember(file.absolutePath) { java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(Date(file.lastModified())) }
+                                ExplorerRow(
+                                    file, detailOf(file), date, size, file.absolutePath in selectedPaths, selectionMode, !file.canRead(),
+                                    req, onOpen = { open(file) }, onMenu = { showMenuFor = file },
+                                ) { itemMenu(file) }
+                            }
                         }
                     }
-                } else {
-                    val shown = shownEntries
-                    items(shown, key = { it.absolutePath }) { file ->
-                        val isFav = remember(file.absolutePath, favTick) {
-                            FavoritesStore.isFavorite(context, file.absolutePath)
+                    if (pullState.verticalOffset > 0.5f || pullState.isRefreshing) {
+                        PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter))
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp).glass(RoundedCornerShape(30.dp)).padding(6.dp),
+                ) {
+                    CompositionLocalProvider(com.droiddeck.launcher.ui.LocalPillButtons provides true) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                            if (pickDirMode) PrimaryButton(
+                                stringResource(R.string.fp_choose_named, hereName), enabled = currentDir.canRead() && pickAllowed(currentDir), main = true,
+                                icon = Icons.Filled.Check, modifier = Modifier.focusRequester(chooseFocus),
+                            ) {
+                                pickPrefs.edit().putString("lastFilePickerDir", currentDir.absolutePath).apply()
+                                onPick?.invoke(currentDir)
+                            }
+                            if (onAddAll != null && entries.any { it.isDirectory && it.canRead() }) {
+                                PrimaryButton(stringResource(R.string.games_add_all), main = !pickDirMode, icon = Icons.Filled.Add) { onAddAll(currentDir, showHidden) }
+                            }
+                            if (canGoUp) SecondaryButton(stringResource(R.string.fm_up_one_level), enabled = !cancellingNavigation, modifier = Modifier.focusRequester(upFocus)) { requestNavigation(FileManagerNavigation.UP) }
+                            if (launchDir != null) SecondaryButton(stringResource(R.string.fm_return_to_start), enabled = !cancellingNavigation) { requestNavigation(FileManagerNavigation.RETURN_TO_START) }
+                            if (onExit != null) SecondaryButton(stringResource(if (pickMode) R.string.common_cancel else R.string.common_close), enabled = !cancellingNavigation) {
+                                requestNavigation(FileManagerNavigation.EXIT)
+                            }
                         }
-                        FileItemRow(
-                            file = file,
-                            showActions = !pickMode,
-                            compact = compactRows,
-                            selectionMode = selectionMode,
-                            selected = file.absolutePath in selectedPaths,
-                            onLongPress = {
-                                if (!pickMode) {
-                                    if (selectionMode) {
-                                        selectedPaths = if (file.absolutePath in selectedPaths)
-                                            selectedPaths - file.absolutePath
-                                        else selectedPaths + file.absolutePath
-                                    } else {
-                                        showMenuFor = file
-                                    }
-                                }
-                            },
-                            onToggleSelect = {
-                                selectedPaths = if (file.absolutePath in selectedPaths)
-                                    selectedPaths - file.absolutePath
-                                else selectedPaths + file.absolutePath
-                            },
-                            onTap = {
-                                if (file.isDirectory) loadDirectory(file)
-                                else if (pickMode) {
-                                    if (matchesPickExt(file)) {
-                                        pickPrefs.edit().putString("lastFilePickerDir", currentDir.absolutePath).apply()
-                                        onPick?.invoke(file)
-                                    }
-                                }
-                            },
-                            onMenu = { showMenuFor = file },
-                            menuExpanded = showMenuFor == file,
-                            onDismissMenu = { showMenuFor = null },
-                            onSelect = {
-                                selectionMode = true
-                                selectedPaths = selectedPaths + file.absolutePath
-                                showMenuFor = null
-                            },
-                            onCopy = { clipboardFiles = listOf(file); isCutOperation = false; showMenuFor = null },
-                            onCut = { clipboardFiles = listOf(file); isCutOperation = true; showMenuFor = null },
-                            onDelete = { selectedEntry = file; showMenuFor = null },
-                            onRename = { renameTarget = file; showMenuFor = null },
-                            isFavorite = isFav,
-                            onToggleFavorite = {
-                                val nowFav = FavoritesStore.toggle(context, file.absolutePath)
-                                favTick++
-                                showMenuFor = null
-                                Toast.makeText(
-                                    context,
-                                    if (nowFav) context.getString(R.string.fm_favorite_added, file.name)
-                                    else context.getString(R.string.fm_favorite_removed, file.name),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            },
-                            onProperties = { propertiesTarget = file; showMenuFor = null },
-                        )
                     }
                 }
             }
-            if (pullState.verticalOffset > 0.5f || pullState.isRefreshing) {
-                PullToRefreshContainer(
-                    state = pullState,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
-            }
         }
-        }
-            }
-        }
+    }
+}
+
+/** A file that counts as a game in folder summaries: one of the ROM formats DroidDeck recognises. */
+internal fun isGameFile(file: File): Boolean = file.extension.lowercase() in com.droiddeck.launcher.frontend.RomPlatforms.knownExtensions
+
+@Composable
+private fun TrackFocus(map: HashMap<String, FocusRequester>, path: String, requester: FocusRequester) {
+    DisposableEffect(path, requester) {
+        map[path] = requester
+        onDispose { if (map[path] === requester) map.remove(path) }
     }
 }

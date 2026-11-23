@@ -576,8 +576,9 @@ fun ToggleSwitch(checked: Boolean, enabled: Boolean = true, label: String? = nul
             .semantics { stateDescription = if (checked) onLabel else offLabel; if (label != null) contentDescription = label },
     ) {
         Box(
-            Modifier.size(width = 52.dp, height = 30.dp).clip(shape).background(track)
-                .glideBorder(hot, shape, if (checked) colors.onBackground else pal.signal, if (checked) pal.signal else pal.line2),
+            Modifier.glideBorder(hot, shape, pal.signal).padding(4.dp)
+                .size(width = 52.dp, height = 30.dp).clip(shape).background(track)
+                .border(1.dp, if (checked) pal.signal else pal.line2, shape),
         ) {
             Box(
                 Modifier.padding(4.dp).size(22.dp)

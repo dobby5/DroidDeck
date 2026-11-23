@@ -94,8 +94,15 @@ private val GLASSES_TAB = SettingsSection.GLASSES.ordinal
 private val LAUNCHER_TAB = SettingsSection.LAUNCHER.ordinal
 private val DEVELOPER_TAB = SettingsSection.DEVELOPER.ordinal
 
+internal const val SETUP_ROMS = "setup:roms"
+
 internal object SetupTabs {
     var openLauncher = false
+    /** Set by a link to the ROMs folders; the group scrolls into view and takes focus. */
+    var openRoms by mutableStateOf(false)
+    /** The page B goes back to from Setup, when a link brought the user here (an emulator's page). */
+    var returnTo by mutableStateOf<String?>(null)
+    var returnLabel: String? = null
     var focusTabs = false
     var openOverview = false
     var openSection by mutableStateOf<SettingsSection?>(null)
@@ -198,13 +205,14 @@ internal fun SetupPanel(
         onSave = { a.onDownloadProxy(it); editDownloadProxy = false },
     )
     val tabs = SettingsSection.entries.map { stringResource(it.title) }
-    var tab by rememberSaveable { mutableStateOf(SetupTabs.openSection?.ordinal ?: if (SetupTabs.openLauncher) LAUNCHER_TAB else OVERVIEW_TAB) }
+    var tab by rememberSaveable { mutableStateOf(SetupTabs.openSection?.ordinal ?: if (SetupTabs.openLauncher || SetupTabs.openRoms) LAUNCHER_TAB else OVERVIEW_TAB) }
     var query by rememberSaveable { mutableStateOf("") }
     var searching by rememberSaveable { mutableStateOf(false) }
     var logsRefresh by remember { mutableStateOf(0) }
     var deleteSessionLogs by remember { mutableStateOf<java.io.File?>(null) }
     SetupTabs.openLauncher = false
     if (SetupTabs.openOverview) { tab = OVERVIEW_TAB; SetupTabs.openOverview = false }
+    if (SetupTabs.openRoms && tab != LAUNCHER_TAB) { tab = LAUNCHER_TAB; searching = false; query = "" }
     LaunchedEffect(SetupTabs.openSection) {
         SetupTabs.openSection?.let { tab = it.ordinal; searching = false; query = "" }
         SetupTabs.openSection = null
@@ -244,7 +252,8 @@ internal fun SetupPanel(
             }
             val listing = searching && query.isNotBlank()
             val fixed = tab == CONTROLLER_TAB && !listing
-            Column(modifier = Modifier.weight(1f).fillMaxWidth().then(if (fixed) Modifier else Modifier.verticalScroll(rememberScrollState())).padding(bottom = if (fixed) 0.dp else 24.dp)) {
+            val scroll = rememberScrollState()
+            Column(modifier = Modifier.weight(1f).fillMaxWidth().then(if (fixed) Modifier else Modifier.focusStaysInScroll(scroll).verticalScroll(scroll)).padding(bottom = if (fixed) 0.dp else 24.dp)) {
                 if (listing) SettingsSearchResults(query) { section -> pick(section.ordinal) }
                 else when (tab) {
                     OVERVIEW_TAB -> {
@@ -597,9 +606,9 @@ internal fun SetupPanel(
                         }
                         BoxWithConstraints(Modifier.fillMaxWidth()) {
                             if (maxWidth >= 840.dp && !LocalNarrowPane.current) Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top) {
-                                Column(Modifier.weight(1f)) { look() }
+                                Column(Modifier.weight(1f)) { look(); RomFoldersGroup(s, a); EmulatorUpdatesGroup(host, s, a) }
                                 Column(Modifier.weight(1f)) { device(); art(); download() }
-                            } else Column { look(); device(); art(); download() }
+                            } else Column { look(); RomFoldersGroup(s, a); EmulatorUpdatesGroup(host, s, a); device(); art(); download() }
                         }
                     }
                     DEVELOPER_TAB -> {

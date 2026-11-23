@@ -1,0 +1,49 @@
+name: Switch title index
+
+# Builds switch-titles.tsv from the newest titledb commit and offers it as an artifact. Commits stay human
+# (tools/release/check_authorship.py), so a maintainer runs tools/switch-titles/update.sh and commits the result.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: switch-titles
+  cancel-in-progress: true
+
+jobs:
+  index:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Rebuild the index from titledb
+        run: |
+          set -euo pipefail
+          bash tools/switch-titles/update.sh
+          sha=$(sed -n 's/^# from titledb commit \([0-9a-f]\{40\}\).*/\1/p' app/src/main/assets/switch-titles.tsv)
+          if git diff --quiet -- app/src/main/assets/switch-titles.tsv; then
+            echo "switch-titles.tsv is current with titledb ${sha::7}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::titledb ${sha::7} changes switch-titles.tsv; run tools/switch-titles/update.sh $sha and commit it"
+            {
+              echo "titledb ${sha::7} changes switch-titles.tsv:"
+              echo '```'
+              git diff --stat -- app/src/main/assets/
+              echo '```'
+              echo "Update with \`tools/switch-titles/update.sh $sha\`, or take the files from this run's artifact."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: switch-titles
+          path: |
+            app/src/main/assets/switch-titles.tsv
+            app/src/main/assets/switch-titles.LICENSE.txt
+          retention-days: 14

@@ -261,6 +261,18 @@ object SessionPrefs {
         prefs(context).edit().putBoolean("libraryShowSize", show).apply()
     }
 
+    fun libraryShowBadges(context: Context): Boolean = prefs(context).getBoolean("libraryShowBadges", true)
+
+    fun setLibraryShowBadges(context: Context, show: Boolean) {
+        prefs(context).edit().putBoolean("libraryShowBadges", show).apply()
+    }
+
+    fun libraryByPlatform(context: Context): Boolean = prefs(context).getBoolean("libraryByPlatform", false)
+
+    fun setLibraryByPlatform(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("libraryByPlatform", on).apply()
+    }
+
     fun libraryShowHidden(context: Context): Boolean = prefs(context).getBoolean("libraryShowHidden", false)
 
     fun setLibraryShowHidden(context: Context, show: Boolean) {
@@ -1176,11 +1188,34 @@ object SessionPrefs {
     }
 
 
-    fun romsDir(context: Context): String =
-        prefs(context).getString("romsDir", "") ?: ""
+    /** The first ROMs folder, which the Linux session mounts at /root/ROMs. */
+    fun romsDir(context: Context): String = romsDirs(context).firstOrNull().orEmpty()
 
-    fun setRomsDir(context: Context, path: String) {
-        prefs(context).edit().putString("romsDir", path).apply()
+    /** Every ROMs folder, shared by all emulators. */
+    fun romsDirs(context: Context): List<String> =
+        prefs(context).let { p ->
+            p.getString("romsDirs", null)?.split('\n')?.filter { it.isNotBlank() }
+                ?: listOfNotNull(p.getString("romsDir", null)?.takeIf { it.isNotBlank() })
+        }
+
+    fun setRomsDirs(context: Context, dirs: List<String>) {
+        val kept = dirs.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        prefs(context).edit().putString("romsDirs", kept.joinToString("\n")).apply()
+    }
+
+    fun emuRunner(context: Context, emulatorId: String): String? =
+        prefs(context).getString("emuRunner.$emulatorId", null)
+
+    fun emuUpdateInterval(context: Context): String =
+        prefs(context).getString("emuUpdateInterval", null)?.takeIf { it in com.droiddeck.launcher.runtime.AndroidEmulatorUpdates.intervals }
+            ?: com.droiddeck.launcher.runtime.AndroidEmulatorUpdates.DAILY
+
+    fun setEmuUpdateInterval(context: Context, interval: String) {
+        prefs(context).edit().putString("emuUpdateInterval", interval).apply()
+    }
+
+    fun setEmuRunner(context: Context, emulatorId: String, runner: String?) {
+        prefs(context).edit().apply { if (runner == null) remove("emuRunner.$emulatorId") else putString("emuRunner.$emulatorId", runner) }.apply()
     }
 
     fun logsEnabled(context: Context): Boolean =

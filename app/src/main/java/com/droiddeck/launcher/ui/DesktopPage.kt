@@ -107,7 +107,7 @@ internal fun DesktopPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
     val colors = MaterialTheme.colorScheme
     LaunchedEffect(Unit) { UserAppsState.refresh(ctx) }
     LaunchedEffect(s.ready) { com.droiddeck.launcher.store.StoreState.refresh(ctx) }
-    val installed = s.emulators.filter { it.installed }
+    val installed = s.emulators.filter { it.ready }
     val apps = UserAppsState.items
     var adding by rememberSaveable { mutableStateOf(false) }
     val mode = SessionService.MODE_DESKTOP
@@ -124,7 +124,7 @@ internal fun DesktopPage(s: FrontEndState, a: FrontEndActions, modifier: Modifie
         modifier = modifier.clipToBounds(),
         start = if (narrow) 20.dp else 44.dp, bottom = 44.dp,
         background = {
-            DesktopWall(installed.map { it.iconRes } + apps.mapNotNull { it.icon })
+            DesktopWall(installed.mapNotNull { it.art } + apps.mapNotNull { it.icon })
         },
         scrim = { lifted ->
             WallFade()
@@ -176,7 +176,7 @@ private fun DesktopDock(
     val colors = MaterialTheme.colorScheme
     val pal = LocalPalette.current
     val narrow = LocalNarrowPane.current
-    val available = s.emulators.filter { !it.installed }
+    val available = s.emulators.filter { !it.ready }
     val flatpaks = com.droiddeck.launcher.store.StoreState.installed.filter { f -> apps.none { it.key == "flatpak:${f.id}" } }
     val keys = installed.map { "emu:${it.id}" } + apps.map { "user:${it.key}" } + flatpaks.map { "flatpak:${it.id}" }
     var lastAt by remember { mutableStateOf<Rect?>(null) }
@@ -209,9 +209,14 @@ private fun DesktopDock(
                                 val system = if (e.systemRes != 0) stringResource(e.systemRes) else e.system.replaceFirstChar { c -> c.uppercase() }
                                 DesktopCard(
                                     k, e.name,
-                                    if (e.id == "retroarch") system else "$system · " + pluralStringResource(R.plurals.mode_added_count, e.games.size, e.games.size),
-                                    art = e.iconRes, first = i == 0,
-                                ) { at -> openFrom(at, e.iconRes, k) }
+                                    if (e.games.isEmpty() && (e.id == "retroarch" || !e.hasContainer)) system else "$system · " + pluralStringResource(R.plurals.mode_added_count, e.games.size, e.games.size),
+                                    art = e.art, first = i == 0,
+                                    badge = when {
+                                        s.emuUpdates[e.id] != null -> stringResource(R.string.emu_update_badge)
+                                        !e.installed && e.androidInstalled -> stringResource(R.string.emu_android_badge)
+                                        else -> null
+                                    },
+                                ) { at -> openFrom(at, e.art, k) }
                             } else if (flatpak != null) DesktopCard(
                                 k, flatpak.name, flatpak.summary ?: stringResource(R.string.flathub_name),
                                 art = flatpak.icon ?: com.droiddeck.launcher.store.FlathubApi.iconUrl(flatpak.id), first = i == 0,
@@ -229,13 +234,15 @@ private fun DesktopDock(
             available.forEach { e ->
                 key(e.id) {
                     val pkg = Library.packageId(e.id)?.let { id -> s.packages?.firstOrNull { it.id == id } }
-                    val busyHere = pkg != null && s.packageBusyId == pkg.id
-                    val canGet = pkg != null && !s.busy && s.packageBusyId == null && s.ready && !s.packageCatalogLoading && !s.sessionRunning
+                    val androidBusy = e.android != null && s.androidEmuBusy == e.android.id
+                    val busyHere = (pkg != null && s.packageBusyId == pkg.id) || androidBusy
+                    val canGet = e.android == null && pkg != null && !s.busy && s.packageBusyId == null && s.ready && !s.packageCatalogLoading && !s.sessionRunning
                     val system = if (e.systemRes != 0) stringResource(e.systemRes) else e.system.replaceFirstChar { c -> c.uppercase() }
                     DesktopCard(
-                        "emu:${e.id}", e.name, if (busyHere) (s.packageStage ?: stringResource(R.string.store_installing)) else system,
-                        art = e.iconRes, badge = if (busyHere) null else stringResource(R.string.comp_get),
-                        progress = if (busyHere) s.packagePercent else null, first = keys.isEmpty() && e == available.first(),
+                        "emu:${e.id}", e.name,
+                        if (androidBusy) stringResource(R.string.store_installing) else if (busyHere) (s.packageStage ?: stringResource(R.string.store_installing)) else system,
+                        art = e.art, badge = if (busyHere) null else stringResource(R.string.comp_get),
+                        progress = if (androidBusy) s.androidEmuPercent else if (busyHere) s.packagePercent else null, first = keys.isEmpty() && e == available.first(),
                     ) { at ->
                         if (canGet && pkg != null && at != null) {
                             a.onInstallPackage(pkg.id)
@@ -245,7 +252,7 @@ private fun DesktopDock(
                                 val r = row ?: return@Flight null
                                 Offset((end?.right ?: r.left) + 70.dp.toPx(), r.center.y)
                             }))
-                        } else openFrom(at, e.iconRes, "emu:${e.id}")
+                        } else openFrom(at, e.art, "emu:${e.id}")
                     }
                 }
             }

@@ -79,89 +79,15 @@ internal fun pickVolumes(context: Context): List<PickVolume> =
             File(o.path.substringBefore("/Android/")).takeIf { it.isDirectory }?.let { PickVolume(it, o.name, removable = true) }
         }.distinctBy { it.root.absolutePath }
 
-internal class PickFolder(val dir: File, val readable: Boolean)
-
-internal class PickListing(val folders: List<PickFolder>, val files: List<File>)
-
-internal fun pickListing(dir: File, kind: PickKind, showHidden: Boolean = false): PickListing {
-    val all = dir.listFiles()?.filter { showHidden || !it.name.startsWith(".") }.orEmpty().sortedBy { it.name.lowercase() }
-    return PickListing(
-        all.filter { it.isDirectory }.map { PickFolder(it, it.canRead() && it.list() != null) },
-        all.filter { it.isFile && it.extension.lowercase() in kind.extensions },
-    )
-}
-
 @Composable
 internal fun ExePickerDialog(
     title: String, kind: PickKind = PickKind.EXE, start: File? = null,
     onAddAll: ((File, Boolean) -> Unit)? = null, onPick: (File) -> Unit, onDismiss: () -> Unit,
 ) {
-    val ctx = LocalContext.current
-    val colors = MaterialTheme.colorScheme
-    val density = LocalDensity.current
-    val prefs = remember(ctx) { ctx.getSharedPreferences("game_picker", Context.MODE_PRIVATE) }
-    var showHidden by remember { mutableStateOf(prefs.getBoolean("show_hidden", false)) }
-    val shown = rememberShown(onDismiss)
-    val close = { shown.targetState = false }
-    val volumes = remember { pickVolumes(ctx) }
-    fun volumeOf(d: File) = volumes.filter { d.path == it.root.path || d.path.startsWith(it.root.path + "/") }.maxByOrNull { it.root.path.length }
-    var dir by remember { mutableStateOf(start?.takeIf { it.isDirectory && volumeOf(it) != null }) }
-    val volume = dir?.let { volumeOf(it) }
-    val up = { dir = dir?.let { d -> if (volume == null || d.path == volume.root.path) null else d.parentFile } }
-    val back = { if (dir == null) close() else up() }
-    val first = remember(dir) { FocusRequester() }
-    LaunchedEffect(dir) { focusWithinFrames({ false }) { first } }
-    val listing = remember(dir, showHidden) { dir?.let { pickListing(it, kind, showHidden) } }
-    var locked by remember { mutableStateOf<Dp?>(null) }
-    AppDialog(
-        shown, close, "filePicker", wide = false, maxWidth = 520.dp, width = locked, fitContent = locked == null, back = back,
-        modifier = Modifier.onSizeChanged { if (locked == null && it.width > 0) locked = with(density) { it.width.toDp() } },
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-            DialogTitleRow(title, onClose = close, leading = {
-                SmallIconButton(
-                    if (showHidden) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    stringResource(if (showHidden) R.string.fm_hide_hidden else R.string.fm_show_hidden),
-                    if (showHidden) colors.primary else colors.onSurfaceVariant,
-                ) {
-                    showHidden = !showHidden
-                    prefs.edit().putBoolean("show_hidden", showHidden).apply()
-                }
-            })
-            if (dir != null && volume != null) {
-                val crumbs = listOf(volume.label) + dir!!.path.removePrefix(volume.root.path).split('/').filter { it.isNotEmpty() }
-                Text(crumbs.joinToString(" › "), fontSize = 12.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
-            Column(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()).padding(top = 4.dp),
-            ) {
-                if (dir == null) {
-                    volumes.forEachIndexed { i, v ->
-                        key(v.root.path) {
-                            PickerRow(if (v.removable) Icons.Outlined.SdCard else Icons.Outlined.Smartphone, v.label,
-                                stringResource(R.string.stores_target_free, formatBytes(v.free)), tall = true, focus = if (i == 0) first else null) { dir = v.root }
-                        }
-                    }
-                } else {
-                    val shownListing = listing ?: PickListing(emptyList(), emptyList())
-                    PickerRow(Icons.AutoMirrored.Outlined.ArrowBack, "..", null, focus = first, onClick = up)
-                    if (onAddAll != null && shownListing.folders.any { it.readable }) {
-                        PickerRow(Icons.Filled.Add, stringResource(R.string.games_add_all), null, accent = true) { onAddAll(dir!!, showHidden); close() }
-                    }
-                    for (f in shownListing.folders) key(f.dir.path) {
-                        PickerRow(Icons.Outlined.Folder, f.dir.name, null, enabled = f.readable) { dir = f.dir }
-                    }
-                    for (f in shownListing.files) key(f.path) {
-                        PickerRow(if (kind == PickKind.IMAGE) Icons.Outlined.Image else Icons.Outlined.InsertDriveFile, f.name, formatBytes(f.length()), file = true) {
-                            onPick(f); close()
-                        }
-                    }
-                }
-            }
-        }
-    }
+    com.droiddeck.launcher.files.ExplorerDialog(
+        title, onDismiss, extensions = kind.extensions.toList(), initialDir = start?.takeIf { it.isDirectory },
+        onAddAll = onAddAll, onPick = onPick,
+    )
 }
 
 @Composable

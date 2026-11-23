@@ -124,11 +124,13 @@ private fun DownloadList(s: FrontEndState, a: FrontEndActions) {
         }
     }.filter { "${it.store.id}:${it.id}" !in queued }.distinctBy { "${it.store.id}:${it.id}" }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        AnimatedVisibility(entries.isEmpty() && interrupted.isEmpty(), enter = fadeIn(Motion.tw(300, 300)), exit = fadeOut(Motion.tw(120))) {
+        val emulator = s.androidEmuBusy?.let { id -> s.emulators.firstOrNull { it.android?.id == id } }
+        AnimatedVisibility(entries.isEmpty() && interrupted.isEmpty() && emulator == null, enter = fadeIn(Motion.tw(300, 300)), exit = fadeOut(Motion.tw(120))) {
             Box(Modifier.fillMaxWidth().padding(vertical = 40.dp), contentAlignment = Alignment.Center) {
                 Text(stringResource(R.string.stores_downloads_empty), fontSize = 13.sp, color = colors.onSurfaceVariant)
             }
         }
+        if (emulator != null) EmulatorDownloadCard(emulator, s.androidEmuPercent, a)
         AnimatedRows(
             active, key = { it.key },
             enter = { i, later ->
@@ -386,6 +388,34 @@ private fun DownloadCard(d: DownloadEntry, s: FrontEndState, a: FrontEndActions)
                     DownloadState.CANCELLED -> {}
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun EmulatorDownloadCard(e: com.droiddeck.launcher.frontend.Library.Emulator, percent: Int, a: FrontEndActions) {
+    val pal = LocalPalette.current
+    val name = e.android?.name ?: e.name
+    val dim = Color.White.copy(alpha = 0.72f)
+    Box(Modifier.fillMaxWidth().heightIn(min = 88.dp).clip(Shape12).background(Color(0xFF101318)).border(1.dp, pal.line, Shape12)) {
+        Spacer(Modifier.matchParentSize().background(artBrush(hueOf(name))))
+        Spacer(Modifier.matchParentSize().background(Brush.horizontalGradient(0f to Color.Black.copy(alpha = 0.92f), 0.5f to Color.Black.copy(alpha = 0.7f), 1f to Color.Black.copy(alpha = 0.15f))))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            EmulatorIcon(e, 40)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    SourceChip(com.droiddeck.launcher.frontend.Library.SOURCE_EMULATORS, small = true)
+                }
+                val bar = Modifier.fillMaxWidth().height(4.dp).clip(Shape12)
+                if (percent >= 0) androidx.compose.material3.LinearProgressIndicator(progress = { percent / 100f }, color = pal.signal, modifier = bar)
+                else androidx.compose.material3.LinearProgressIndicator(color = pal.signal, modifier = bar)
+                Text(
+                    if (percent >= 0) stringResource(R.string.android_emu_dl_percent, percent) else stringResource(R.string.android_emu_dl_installing),
+                    fontSize = 12.sp, color = dim, maxLines = 1,
+                )
+            }
+            CancelAction { a.onCancelAndroidEmulatorDownload() }
         }
     }
 }
