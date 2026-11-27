@@ -214,6 +214,7 @@ fun FileManagerScreen(
     var counts by remember { mutableStateOf<Map<String, FolderCounts>>(emptyMap()) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<File?>(null) }
+    var editingTarget by remember { mutableStateOf<File?>(null) }
     var propertiesTarget by remember { mutableStateOf<File?>(null) }
     var isOperationRunning by remember { mutableStateOf(false) }
     var operationLabel by remember { mutableStateOf("") }
@@ -338,7 +339,7 @@ fun FileManagerScreen(
         if (isOperationActive()) pendingNavigation = action else navigate(action)
     }
 
-    BackHandler(enabled = operationActive || cancellingNavigation || currentDir != currentRoot || history.isNotEmpty() || onExit != null) {
+    BackHandler(enabled = editingTarget == null && (operationActive || cancellingNavigation || currentDir != currentRoot || history.isNotEmpty() || onExit != null)) {
         requestNavigation(FileManagerNavigation.BACK)
     }
 
@@ -761,6 +762,7 @@ fun FileManagerScreen(
                 pickPrefs.edit().putString("lastFilePickerDir", currentDir.absolutePath).apply()
                 onPick?.invoke(file)
             }
+            !pickMode -> editingTarget = file
         }
     }
 
@@ -809,6 +811,7 @@ fun FileManagerScreen(
                 true, file, isFav, onDismiss = { showMenuFor = null },
                 onSelect = { selectionMode = true; selectedPaths = selectedPaths + file.absolutePath },
                 onProperties = { propertiesTarget = file }, onToggleFavorite = { toggleFavorite(file) },
+                onOpen = if (pickMode) null else ({ editingTarget = file }),
                 onRename = { renameTarget = file },
                 onCopy = { clipboardFiles = listOf(file); isCutOperation = false },
                 onCut = { clipboardFiles = listOf(file); isCutOperation = true },
@@ -820,6 +823,11 @@ fun FileManagerScreen(
     fun detailOf(file: File): String =
         if (file.isDirectory) folderDetail(counts[file.absolutePath])
         else com.droiddeck.launcher.stores.formatBytes(file.length())
+
+    editingTarget?.let { target ->
+        TextEditorScreen(file = target, onExit = { editingTarget = null }, modifier = Modifier.fillMaxSize())
+        return
+    }
 
     Box(
         Modifier.fillMaxSize().background(colors.background)

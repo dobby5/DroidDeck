@@ -328,12 +328,15 @@ internal fun FileActionMenu(
     open: Boolean, file: File, isFavorite: Boolean, onDismiss: () -> Unit,
     onSelect: () -> Unit, onProperties: () -> Unit, onToggleFavorite: () -> Unit,
     onRename: () -> Unit, onCopy: () -> Unit, onCut: () -> Unit, onDelete: () -> Unit,
+    onOpen: (() -> Unit)? = null,
 ) {
     com.droiddeck.launcher.ui.AnchoredMenu(open, onDismiss = onDismiss, title = file.name, compact = true, minWidth = 240.dp) { first ->
         val item: @Composable (Int, () -> Unit, FocusRequester?) -> Unit = { label, action, f ->
             com.droiddeck.launcher.ui.MenuItem(stringResource(label), checked = false, focusRequester = f) { onDismiss(); action() }
         }
-        item(R.string.fm_select, onSelect, first)
+        val opens = onOpen != null && !file.isDirectory
+        if (opens) item(R.string.fm_edit_open, onOpen!!, first)
+        item(R.string.fm_select, onSelect, if (opens) null else first)
         item(R.string.fm_properties, onProperties, null)
         if (file.isDirectory) item(if (isFavorite) R.string.fm_favorite_remove else R.string.fm_favorite_add, onToggleFavorite, null)
         item(R.string.fm_rename, onRename, null)
